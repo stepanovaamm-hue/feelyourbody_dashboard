@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FitBase: система управления студией</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- ===================== WELCOME SCREEN ===================== -->
+  <div id="welcome" role="dialog" aria-label="Стартовый экран дашборда">
+    <div class="w-card">
+      <div class="w-top">
+        <div class="w-brand" aria-label="Feel Your Body"><span>feel your body</span><span class="x">×</span><span>dashboard</span></div>
+        <div class="w-year">2026</div>
+      </div>
+      <h1 id="motivation">Студия растёт из маленьких шагов: одного занятия, одного решения, одного человека, который вернулся снова.</h1>
+      <p class="w-quote" id="subquote"></p>
+      <div class="w-vine" id="vine" aria-hidden="true">
+        <svg viewBox="0 0 360 46" preserveAspectRatio="none">
+          <path class="stem-bg" d="M4,34 C70,16 110,40 168,26 C226,12 270,38 356,22"/>
+          <path class="stem" pathLength="100" d="M4,34 C70,16 110,40 168,26 C226,12 270,38 356,22"/>
+          <g transform="translate(46,26)"><g class="leaf" style="--d:.7s"><path fill="#8fcf6a" d="M0,0 C2,-9 11,-10 14,-3 C10,2 3,4 0,0 Z"/></g></g>
+          <g transform="translate(78,33) scale(1,-1)"><g class="leaf" style="--d:1.3s"><path fill="#6cbf8e" d="M0,0 C2,-8 10,-9 13,-3 C9,2 3,3 0,0 Z"/></g></g>
+          <g transform="translate(120,38)"><g class="leaf" style="--d:1.9s"><path fill="#2e7a5e" d="M0,0 C2,-9 11,-10 15,-2 C10,3 3,4 0,0 Z"/></g></g>
+          <g transform="translate(168,26) scale(1,-1)"><g class="leaf" style="--d:2.7s"><path fill="#8fcf6a" d="M0,0 C2,-9 11,-10 14,-3 C10,2 3,4 0,0 Z"/></g></g>
+          <g transform="translate(210,20)"><g class="leaf" style="--d:3.4s"><path fill="#6cbf8e" d="M0,0 C2,-8 10,-9 13,-3 C9,2 3,3 0,0 Z"/></g></g>
+          <g transform="translate(252,34) scale(1,-1)"><g class="leaf" style="--d:4.2s"><path fill="#2e7a5e" d="M0,0 C2,-9 11,-10 15,-2 C10,3 3,4 0,0 Z"/></g></g>
+          <g transform="translate(300,30)"><g class="leaf" style="--d:5s"><path fill="#8fcf6a" d="M0,0 C2,-9 11,-10 14,-3 C10,2 3,4 0,0 Z"/></g></g>
+          <g transform="translate(340,24) scale(1,-1)"><g class="leaf" style="--d:5.7s"><path fill="#6cbf8e" d="M0,0 C2,-8 10,-9 13,-3 C9,2 3,3 0,0 Z"/></g></g>
+          <circle class="seed" cx="356" cy="22" r="3.4" style="--d:6.3s"/>
+        </svg>
+      </div>
+      <button id="welcomeEnter" class="w-enter" type="button">Открыть дашборд →</button>
+    </div>
+  </div>
+  <div id="app">
+    <header class="appbar">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">FYB</div>
+        <div>
+          <h1>FitBase: система управления студией</h1>
+          <p id="dataNote">Финансы, продажи, посещаемость, удержание и рекомендации.</p>
+        </div>
+      </div>
+      <div class="month-badge" id="periodBadge">Май 2026</div>
+    </header>
+
+    <section class="filter-panel" aria-labelledby="filters-title">
+      <div class="card-h">
+        <h2 id="filters-title">Фильтры</h2>
+        <span class="sub">период, продукт, направление, менеджер</span>
+      </div>
+      <div class="filters">
+        <label>Месяц
+          <select id="filterMonth"></select>
+        </label>
+        <label>Период с
+          <input id="filterFrom" type="date">
+        </label>
+        <label>Период по
+          <input id="filterTo" type="date">
+        </label>
+        <label>Направление
+          <select id="filterDirection"></select>
+        </label>
+        <label>Тип продукта
+          <select id="filterProductType"></select>
+        </label>
+        <label>Менеджер
+          <select id="filterManager"></select>
+        </label>
+        <label>Сегмент
+          <select id="filterSegment"></select>
+        </label>
+        <label>Источник
+          <select id="filterSource"></select>
+        </label>
+      </div>
+      <div class="filter-actions">
+        <button id="applyFilters" class="primary" type="button">Применить</button>
+        <button id="resetFilters" class="ghost" type="button">Сбросить</button>
+      </div>
+    </section>
+
+    <nav class="tabs" aria-label="Разделы дашборда">
+      <button type="button" data-tab="dashboard" data-ico="◇" data-short="Главный" class="active">Главный</button>
+      <button type="button" data-tab="sales" data-ico="₽" data-short="Продажи">Продажи</button>
+      <button type="button" data-tab="attendance" data-ico="▦" data-short="Посещ.">Посещаемость</button>
+      <button type="button" data-tab="funnel" data-ico="▽" data-short="Воронка">Воронка</button>
+      <button type="button" data-tab="clients" data-ico="◍" data-short="Клиенты">Клиенты</button>
+      <button type="button" data-tab="expenses" data-ico="◔" data-short="Расходы">Расходы</button>
+      <button type="button" data-tab="recommendations" data-ico="✦" data-short="Советы">Рекомендации</button>
+      <button type="button" data-tab="monthReport" data-ico="☰" data-short="Итог">Итог месяца</button>
+      <button type="button" data-tab="data" data-ico="＋" data-short="Данные">Данные</button>
+    </nav>
+
+    <main>
+      <section id="tab-dashboard" class="tab-panel active">
+        <div class="sheet-head">
+          <h2>Главный экран</h2>
+          <p>Операционная картина месяца: деньги, клиенты, загрузка и действия.</p>
+        </div>
+        <div id="kpiCards" class="kpi-grid"></div>
+        <div id="dashboardSummary"></div>
+      </section>
+
+      <section id="tab-sales" class="tab-panel">
+        <div class="sheet-head">
+          <h2>Продажи</h2>
+          <p>Продукты, средний чек, доля в выручке и динамика.</p>
+        </div>
+        <div id="salesContent"></div>
+      </section>
+
+      <section id="tab-attendance" class="tab-panel">
+        <div class="sheet-head">
+          <h2>Посещаемость и заполняемость</h2>
+          <p>Направления в красной зоне, зоне внимания, норме и масштабе.</p>
+        </div>
+        <div id="attendanceContent"></div>
+      </section>
+
+      <section id="tab-funnel" class="tab-panel">
+        <div class="sheet-head">
+          <h2>Воронка</h2>
+          <p>Пробное занятие → покупка абонемента → продление → повторная покупка.</p>
+        </div>
+        <div id="funnelContent"></div>
+      </section>
+
+      <section id="tab-clients" class="tab-panel">
+        <div class="sheet-head">
+          <h2>Клиенты / удержание</h2>
+          <p>Кому написать, кого вернуть и кому предложить продление.</p>
+        </div>
+        <div id="clientsContent"></div>
+      </section>
+
+      <section id="tab-expenses" class="tab-panel">
+        <div class="sheet-head">
+          <h2>Расходы и прибыль</h2>
+          <p>Категории расходов, доля от выручки, прибыль и маржинальность.</p>
+        </div>
+        <div id="expensesContent"></div>
+      </section>
+
+      <section id="tab-recommendations" class="tab-panel">
+        <div class="sheet-head">
+          <h2>Рекомендации</h2>
+          <p>Автоматические подсказки по маркетингу, продажам и операционке.</p>
+        </div>
+        <div id="recommendationsContent"></div>
+      </section>
+
+      <section id="tab-monthReport" class="tab-panel">
+        <div class="sheet-head">
+          <h2>Итог месяца</h2>
+          <p>Готовый краткий отчет для управленческого разбора.</p>
+        </div>
+        <div class="card report-card">
+          <pre id="monthReportText"></pre>
+          <button id="copyReport" class="primary" type="button">Скопировать итог</button>
+        </div>
+      </section>
+
+      <section id="tab-data" class="tab-panel">
+        <div class="sheet-head">
+          <h2>Данные</h2>
+          <p>Загрузка выгрузок FitBase и ручной ввод расходов, плана и маркетинга.</p>
+        </div>
+
+        <section class="card data-card">
+          <div class="card-h">
+            <h3>Загрузка выгрузок</h3>
+            <span class="sub">CSV, HTML, XLS, XLSX</span>
+          </div>
+          <p>Старые XLS читаются в браузере через SheetJS CDN. HTML-выгрузки FitBase распознаются автоматически.</p>
+          <div class="upload-row">
+            <label>Тип данных
+              <select id="uploadType">
+                <option value="auto">Определить автоматически</option>
+                <option value="sales">Продажи</option>
+                <option value="renewals">Продления</option>
+                <option value="schedules">Расписание / загрузка групп</option>
+                <option value="visits">Посещения</option>
+                <option value="trials">Пробные занятия</option>
+                <option value="personals">Персональные занятия</option>
+                <option value="clients">Клиенты</option>
+              </select>
+            </label>
+            <input id="fileInput" type="file" multiple accept=".csv,.tsv,.html,.htm,.xls,.xlsx">
+            <button id="importFiles" class="primary" type="button">Загрузить</button>
+          </div>
+          <p id="importStatus" class="status-line"></p>
+        </section>
+
+        <section class="card data-card">
+          <div class="card-h">
+            <h3>Ручной ввод</h3>
+            <span class="sub">расходы, планы, маркетинг и продажи</span>
+          </div>
+          <div id="manualForms"></div>
+        </section>
+
+        <section class="card data-card">
+          <div class="card-h">
+            <h3>Сервис</h3>
+            <span class="sub">экспорт и сброс</span>
+          </div>
+          <p id="dataStats"></p>
+          <div class="service-actions">
+            <button id="exportState" class="ghost" type="button">Скачать JSON</button>
+            <button id="restoreInitial" class="ghost" type="button">Вернуть майские данные</button>
+            <button id="clearData" class="danger" type="button">Очистить все данные</button>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="initial-data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
