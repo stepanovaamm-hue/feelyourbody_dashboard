@@ -172,6 +172,9 @@
     normalized.expenses = normalized.expenses.map((row) => normalizeLoadedRecord("expenses", row));
     normalized.plans = normalized.plans.map((row) => normalizeLoadedRecord("plans", row));
     normalized.marketing = normalized.marketing.map((row) => normalizeLoadedRecord("marketing", row));
+    DATASETS.forEach((key) => {
+      normalized[key] = dedupeRecords(normalized[key], key);
+    });
     return normalized;
   }
 
@@ -231,6 +234,26 @@
       record.budget = toNumber(record.budget || 0);
     }
     return record;
+  }
+
+  function dedupeRecords(rows, type) {
+    const seen = new Set();
+    return (rows || []).filter((row) => {
+      const signature = [
+        type,
+        clean(row.client || row.clientName),
+        clean(row.className || row.direction),
+        clean(row.trainer),
+        clean(row.name || row.membership || row.renewalName),
+        clean(row.date || row.entryAt || row.purchaseDate || row.endDate || row.month),
+        toNumber(row.amount),
+        toNumber(row.quantity || row.visits || row.sessions || row.attended),
+        clean(row.status)
+      ].join("|").toLowerCase();
+      if (seen.has(signature)) return false;
+      seen.add(signature);
+      return true;
+    });
   }
 
   function saveState(options = {}) {
@@ -2244,9 +2267,10 @@
           .map((row, index) => normalizeUploadedRow(detected, row, file.name, index))
           .filter(Boolean);
         const beforeReplace = state[detected].length;
-        state[detected] = state[detected].filter((record) => record.sourceFile !== file.name);
+        state[detected] = state[detected].filter((record) => !record.sourceFile);
         const replaced = beforeReplace - state[detected].length;
         state[detected].push(...records);
+        state[detected] = dedupeRecords(state[detected], detected);
         records.forEach((record) => {
           const month = recordMonth(record, detected);
           if (month) importedMonths.add(month);
@@ -2427,13 +2451,9 @@
     if (type === "schedules") {
       const className = findValue(row, ["Название", "Занятие", "Группа"]);
       if (!className) return null;
-      const capacityRaw = findValue(row, ["Всего слотов", "Слоты", "Вместимость"]);
-      const availableRaw = findValue(row, ["Доступно записей", "Доступно мест", "Свободно мест"]);
-      const bookedRaw = findValue(row, ["Всего записей", "Записались, чел", "Записались"]);
+      const capacityRaw = findValue(row, ["Всего слотов", "Слоты", "Вместимость", "Доступно записей"]);
+      const bookedRaw = findValue(row, ["Записались, чел", "Записались", "Всего записей"]);
       const attendedRaw = findValue(row, ["Пришли, чел", "Пришли", "Посещения"]);
-      const booked = parseLeadingOrNumber(bookedRaw);
-      const available = parseLeadingOrNumber(availableRaw);
-      const capacity = parseLeadingOrNumber(capacityRaw) || (availableRaw ? available + booked : 0);
       const occupancyRaw = findValue(row, ["Заполняемость", "Заполненность", "Загрузка", "Загруженность", "Заполняемость, %", "Заполненность, %"]);
       const hasOccupancyPct = Boolean(occupancyRaw || clean(attendedRaw).includes("%") || clean(bookedRaw).includes("%"));
       const occupancyPct = hasOccupancyPct
@@ -2447,8 +2467,8 @@
         type: findValue(row, ["Тип"]),
         hall: findValue(row, ["Зал"]),
         direction: findValue(row, ["Подразделение", "Направление"]) || className,
-        capacity,
-        booked,
+        capacity: parseLeadingOrNumber(capacityRaw),
+        booked: parseLeadingOrNumber(bookedRaw),
         attended: parseLeadingOrNumber(attendedRaw),
         occupancyPct,
         hasOccupancyPct,
@@ -2787,25 +2807,53 @@
     return "взрослые";
   }
 
+  const DIRECTION_ALIASES = {
+    "антиотечность": "Гибкость",
+    "аренда": "Йога",
+    "здоровая спина": "Гибкость",
+    "индивидуальное занятие": "Гибкость",
+    "йога в гамаках": "Йога",
+    "йога нидра": "Йога",
+    "мастер класс": "Гибкость",
+    "мышцы тазового дна": "Гибкость",
+    "плоский живот": "Сила",
+    "растяжка stretching": "Гибкость",
+    "сила мфр": "Сила",
+    "фитнес растяжка": "Сила",
+    "хатха йога": "Йога",
+    "ягодицы 3d": "Сила"
+  };
+
+  function normalizeClassKey(value) {
+    return clean(value)
+      .toLowerCase()
+      .replace(/ё/g, "е")
+      .replace(/[|+\-–—_/]+/g, " ")
+      .replace(/[^a-zа-я0-9\s]/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
   function resolveDirection(row) {
     const direction = clean(row.direction);
     const className = clean(row.className || row.direction);
+    const aliasKey = normalizeClassKey(className);
 
-    if (direction && !isGenericDirection(direction)) {
-      const mapped = directionFromSchedules(direction);
-      return mapped || direction;
-    }
+    if (DIRECTION_ALIASES[aliasKey]) return DIRECTION_ALIASES[aliasKey];
 
-    const mapped = directionFromSchedules(className);
-    return mapped || className || "Без направления";
+    const mappedDirection = directionForClass(className);
+    if (mappedDirection) return mappedDirection;
+
+    if (direction && !isGenericDirection(direction)) return direction;
+    return className || "Без направления";
   }
 
-  function directionFromSchedules(className) {
-    const target = clean(className).toLowerCase();
+  function directionForClass(className) {
+    const target = normalizeClassKey(className);
     if (!target || !state || !Array.isArray(state.schedules)) return "";
 
     const match = state.schedules.find((schedule) => {
-      const scheduleClass = clean(schedule.className).toLowerCase();
+      const scheduleClass = normalizeClassKey(schedule.className);
       return scheduleClass === target;
     });
 
