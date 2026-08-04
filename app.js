@@ -120,6 +120,7 @@
   document.addEventListener("DOMContentLoaded", init);
 
   function init() {
+    bindAppAuthActions();
     bindTabs();
     bindFilters();
     bindDataActions();
@@ -172,9 +173,6 @@
     normalized.expenses = normalized.expenses.map((row) => normalizeLoadedRecord("expenses", row));
     normalized.plans = normalized.plans.map((row) => normalizeLoadedRecord("plans", row));
     normalized.marketing = normalized.marketing.map((row) => normalizeLoadedRecord("marketing", row));
-    DATASETS.forEach((key) => {
-      normalized[key] = dedupeRecords(normalized[key], key);
-    });
     return normalized;
   }
 
@@ -236,38 +234,21 @@
     return record;
   }
 
-  function dedupeRecords(rows, type) {
-    const seen = new Set();
-    return (rows || []).filter((row) => {
-      const signature = [
-        type,
-        clean(row.client || row.clientName),
-        clean(row.className || row.direction),
-        clean(row.trainer),
-        clean(row.name || row.membership || row.renewalName),
-        clean(row.date || row.entryAt || row.purchaseDate || row.endDate || row.month),
-        toNumber(row.amount),
-        toNumber(row.quantity || row.visits || row.sessions || row.attended),
-        clean(row.status)
-      ].join("|").toLowerCase();
-      if (seen.has(signature)) return false;
-      seen.add(signature);
-      return true;
-    });
-  }
-
   function saveState(options = {}) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     if (!options.localOnly) queueCloudSave();
   }
 
   async function initCloudStorage() {
+    showAuthScreen("Проверяем подключение…", true);
     if (!CLOUD_CONFIG.url || !CLOUD_CONFIG.anonKey) {
-      setCloudStatus("local", "Supabase не настроен. Данные сохраняются только в этом браузере.");
+      setCloudStatus("error", "Supabase не настроен.");
+      showAuthScreen("В supabase-config.js не указаны URL и anon key.");
       return;
     }
     if (!window.supabase || !window.supabase.createClient) {
-      setCloudStatus("error", "Supabase SDK не загрузился. Проверьте интернет и обновите страницу.");
+      setCloudStatus("error", "Supabase SDK не загрузился.");
+      showAuthScreen("Не удалось загрузить Supabase. Проверьте интернет и обновите страницу.");
       return;
     }
 
@@ -278,25 +259,99 @@
       }
     });
     cloud.ready = true;
-    setCloudStatus("auth", "Подключение к Supabase готово. Войдите, чтобы синхронизировать данные.");
 
-    cloud.client.auth.onAuthStateChange((_event, session) => {
+    cloud.client.auth.onAuthStateChange((event, session) => {
       cloud.user = session && session.user ? session.user : null;
-      if (cloud.user) loadCloudState();
-      else {
-        setCloudStatus("auth", "Вы вышли из облака. Локальная копия осталась в браузере.");
-        render();
+      if (cloud.user) {
+        showDashboard();
+        if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") loadCloudState();
+      } else {
+        setCloudStatus("auth", "Для доступа к дашборду требуется вход.");
+        showAuthScreen(event === "SIGNED_OUT" ? "Вы вышли из дашборда." : "");
       }
     });
 
     const { data, error } = await cloud.client.auth.getSession();
     if (error) {
       setCloudStatus("error", `Не удалось проверить вход: ${error.message}`);
+      showAuthScreen(`Не удалось проверить вход: ${error.message}`);
       return;
     }
     cloud.user = data && data.session ? data.session.user : null;
-    if (cloud.user) await loadCloudState();
-    else render();
+    if (cloud.user) {
+      showDashboard();
+      await loadCloudState();
+    } else {
+      setCloudStatus("auth", "Для доступа к дашборду требуется вход.");
+      showAuthScreen("");
+    }
+  }
+
+  function bindAppAuthActions() {
+    const form = document.getElementById("appLoginForm");
+    if (form) form.addEventListener("submit", handleAppSignIn);
+    const signOut = document.getElementById("appSignOut");
+    if (signOut) signOut.addEventListener("click", handleCloudSignOut);
+  }
+
+  async function handleAppSignIn(event) {
+    event.preventDefault();
+    const emailInput = document.getElementById("appLoginEmail");
+    const passwordInput = document.getElementById("appLoginPassword");
+    const button = document.getElementById("appLoginButton");
+    const email = clean(emailInput && emailInput.value);
+    const password = passwordInput ? passwordInput.value : "";
+    if (!email || !password) {
+      showAuthScreen("Введите email и пароль.");
+      return;
+    }
+    if (!cloud.client) {
+      showAuthScreen("Подключение к Supabase ещё не готово.");
+      return;
+    }
+    if (button) button.disabled = true;
+    showAuthScreen("Выполняем вход…", true);
+    const { data, error } = await cloud.client.auth.signInWithPassword({ email, password });
+    if (button) button.disabled = false;
+    if (error) {
+      showAuthScreen(authErrorMessage(error));
+      return;
+    }
+    cloud.user = data && data.user ? data.user : null;
+    showDashboard();
+    await loadCloudState();
+  }
+
+  function authErrorMessage(error) {
+    const message = error && error.message ? error.message : "Неизвестная ошибка";
+    if (/invalid login credentials/i.test(message)) return "Неверный email или пароль.";
+    if (/email not confirmed/i.test(message)) return "Email ещё не подтверждён в Supabase.";
+    return `Не удалось войти: ${message}`;
+  }
+
+  function showAuthScreen(message, info = false) {
+    const screen = document.getElementById("authScreen");
+    const app = document.getElementById("app");
+    const status = document.getElementById("appLoginStatus");
+    if (screen) screen.hidden = false;
+    if (app) app.hidden = true;
+    document.body.classList.add("auth-pending");
+    if (status) {
+      status.textContent = message || "";
+      status.classList.toggle("info", Boolean(info));
+    }
+  }
+
+  function showDashboard() {
+    const screen = document.getElementById("authScreen");
+    const app = document.getElementById("app");
+    const email = document.getElementById("currentUserEmail");
+    const password = document.getElementById("appLoginPassword");
+    if (screen) screen.hidden = true;
+    if (app) app.hidden = false;
+    if (email) email.textContent = cloud.user && cloud.user.email ? cloud.user.email : "";
+    if (password) password.value = "";
+    document.body.classList.remove("auth-pending");
   }
 
   async function loadCloudState(options = {}) {
@@ -390,35 +445,17 @@
     const statusText = cloud.message || "Статус облака пока неизвестен.";
 
     if (!configured) {
-      container.innerHTML = `
-        <div class="${statusClass}">
-          <strong>Локальный режим</strong>
-          <span>Добавьте Supabase URL и anon key в supabase-config.js.</span>
-        </div>
-      `;
+      container.innerHTML = `<div class="${statusClass}"><strong>Supabase не настроен</strong><span>Добавьте URL и anon key в supabase-config.js.</span></div>`;
       return;
     }
 
     const actions = userEmail
-      ? `
-        <div class="cloud-user">
-          <span>Вход: <strong>${escapeHtml(userEmail)}</strong></span>
+      ? `<div class="cloud-user">
+          <span>Пользователь: <strong>${escapeHtml(userEmail)}</strong></span>
           <button id="cloudPull" class="ghost" type="button">Загрузить из облака</button>
           <button id="cloudPush" class="primary" type="button">Отправить локальные данные</button>
-          <button id="cloudSignOut" class="ghost" type="button">Выйти</button>
-        </div>
-      `
-      : `
-        <form id="cloudLoginForm" class="cloud-login">
-          <label>Email
-            <input id="cloudEmail" type="email" autocomplete="email" required>
-          </label>
-          <label>Пароль
-            <input id="cloudPassword" type="password" autocomplete="current-password" required>
-          </label>
-          <button id="cloudSignIn" class="primary" type="submit">Войти</button>
-        </form>
-      `;
+        </div>`
+      : `<p class="muted">Войдите на стартовом экране, чтобы открыть дашборд.</p>`;
 
     container.innerHTML = `
       <div class="${statusClass}">
@@ -431,10 +468,6 @@
   }
 
   function bindCloudPanelActions() {
-    const form = document.getElementById("cloudLoginForm");
-    if (form) form.addEventListener("submit", handleCloudSignIn);
-    const signOut = document.getElementById("cloudSignOut");
-    if (signOut) signOut.addEventListener("click", handleCloudSignOut);
     const pull = document.getElementById("cloudPull");
     if (pull) pull.addEventListener("click", () => loadCloudState({ force: true }));
     const push = document.getElementById("cloudPush");
@@ -465,10 +498,14 @@
 
   async function handleCloudSignOut() {
     if (!cloud.client) return;
-    await cloud.client.auth.signOut();
+    const { error } = await cloud.client.auth.signOut();
+    if (error) {
+      setCloudStatus("error", `Не удалось выйти: ${error.message}`);
+      return;
+    }
     cloud.user = null;
-    setCloudStatus("auth", "Вы вышли из облака. Данные остаются в локальной копии.");
-    render();
+    setCloudStatus("auth", "Вы вышли. Для доступа к дашборду требуется вход.");
+    showAuthScreen("Вы вышли из дашборда.");
   }
 
   function setCloudStatus(status, message) {
@@ -2267,10 +2304,9 @@
           .map((row, index) => normalizeUploadedRow(detected, row, file.name, index))
           .filter(Boolean);
         const beforeReplace = state[detected].length;
-        state[detected] = state[detected].filter((record) => !record.sourceFile);
+        state[detected] = state[detected].filter((record) => record.sourceFile !== file.name);
         const replaced = beforeReplace - state[detected].length;
         state[detected].push(...records);
-        state[detected] = dedupeRecords(state[detected], detected);
         records.forEach((record) => {
           const month = recordMonth(record, detected);
           if (month) importedMonths.add(month);
@@ -2807,7 +2843,7 @@
     return "взрослые";
   }
 
-  const DIRECTION_ALIASES = {
+  const CLASS_TO_DIRECTION = {
     "антиотечность": "Гибкость",
     "аренда": "Йога",
     "здоровая спина": "Гибкость",
@@ -2824,7 +2860,7 @@
     "ягодицы 3d": "Сила"
   };
 
-  function normalizeClassKey(value) {
+  function normalizeClassName(value) {
     return clean(value)
       .toLowerCase()
       .replace(/ё/g, "е")
@@ -2835,31 +2871,13 @@
   }
 
   function resolveDirection(row) {
-    const direction = clean(row.direction);
     const className = clean(row.className || row.direction);
-    const aliasKey = normalizeClassKey(className);
+    const mapped = CLASS_TO_DIRECTION[normalizeClassName(className)];
+    if (mapped) return mapped;
 
-    if (DIRECTION_ALIASES[aliasKey]) return DIRECTION_ALIASES[aliasKey];
-
-    const mappedDirection = directionForClass(className);
-    if (mappedDirection) return mappedDirection;
-
+    const direction = clean(row.direction);
     if (direction && !isGenericDirection(direction)) return direction;
     return className || "Без направления";
-  }
-
-  function directionForClass(className) {
-    const target = normalizeClassKey(className);
-    if (!target || !state || !Array.isArray(state.schedules)) return "";
-
-    const match = state.schedules.find((schedule) => {
-      const scheduleClass = normalizeClassKey(schedule.className);
-      return scheduleClass === target;
-    });
-
-    if (!match) return "";
-    const mappedDirection = clean(match.direction);
-    return mappedDirection && !isGenericDirection(mappedDirection) ? mappedDirection : "";
   }
 
   function findValue(row, aliases) {
