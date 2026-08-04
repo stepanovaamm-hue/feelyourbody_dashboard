@@ -120,7 +120,6 @@
   document.addEventListener("DOMContentLoaded", init);
 
   function init() {
-    bindAppAuthActions();
     bindTabs();
     bindFilters();
     bindDataActions();
@@ -240,15 +239,12 @@
   }
 
   async function initCloudStorage() {
-    showAuthScreen("Проверяем подключение…", true);
     if (!CLOUD_CONFIG.url || !CLOUD_CONFIG.anonKey) {
-      setCloudStatus("error", "Supabase не настроен.");
-      showAuthScreen("В supabase-config.js не указаны URL и anon key.");
+      setCloudStatus("local", "Supabase не настроен. Данные сохраняются только в этом браузере.");
       return;
     }
     if (!window.supabase || !window.supabase.createClient) {
-      setCloudStatus("error", "Supabase SDK не загрузился.");
-      showAuthScreen("Не удалось загрузить Supabase. Проверьте интернет и обновите страницу.");
+      setCloudStatus("error", "Supabase SDK не загрузился. Проверьте интернет и обновите страницу.");
       return;
     }
 
@@ -259,99 +255,25 @@
       }
     });
     cloud.ready = true;
+    setCloudStatus("auth", "Подключение к Supabase готово. Войдите, чтобы синхронизировать данные.");
 
-    cloud.client.auth.onAuthStateChange((event, session) => {
+    cloud.client.auth.onAuthStateChange((_event, session) => {
       cloud.user = session && session.user ? session.user : null;
-      if (cloud.user) {
-        showDashboard();
-        if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") loadCloudState();
-      } else {
-        setCloudStatus("auth", "Для доступа к дашборду требуется вход.");
-        showAuthScreen(event === "SIGNED_OUT" ? "Вы вышли из дашборда." : "");
+      if (cloud.user) loadCloudState();
+      else {
+        setCloudStatus("auth", "Вы вышли из облака. Локальная копия осталась в браузере.");
+        render();
       }
     });
 
     const { data, error } = await cloud.client.auth.getSession();
     if (error) {
       setCloudStatus("error", `Не удалось проверить вход: ${error.message}`);
-      showAuthScreen(`Не удалось проверить вход: ${error.message}`);
       return;
     }
     cloud.user = data && data.session ? data.session.user : null;
-    if (cloud.user) {
-      showDashboard();
-      await loadCloudState();
-    } else {
-      setCloudStatus("auth", "Для доступа к дашборду требуется вход.");
-      showAuthScreen("");
-    }
-  }
-
-  function bindAppAuthActions() {
-    const form = document.getElementById("appLoginForm");
-    if (form) form.addEventListener("submit", handleAppSignIn);
-    const signOut = document.getElementById("appSignOut");
-    if (signOut) signOut.addEventListener("click", handleCloudSignOut);
-  }
-
-  async function handleAppSignIn(event) {
-    event.preventDefault();
-    const emailInput = document.getElementById("appLoginEmail");
-    const passwordInput = document.getElementById("appLoginPassword");
-    const button = document.getElementById("appLoginButton");
-    const email = clean(emailInput && emailInput.value);
-    const password = passwordInput ? passwordInput.value : "";
-    if (!email || !password) {
-      showAuthScreen("Введите email и пароль.");
-      return;
-    }
-    if (!cloud.client) {
-      showAuthScreen("Подключение к Supabase ещё не готово.");
-      return;
-    }
-    if (button) button.disabled = true;
-    showAuthScreen("Выполняем вход…", true);
-    const { data, error } = await cloud.client.auth.signInWithPassword({ email, password });
-    if (button) button.disabled = false;
-    if (error) {
-      showAuthScreen(authErrorMessage(error));
-      return;
-    }
-    cloud.user = data && data.user ? data.user : null;
-    showDashboard();
-    await loadCloudState();
-  }
-
-  function authErrorMessage(error) {
-    const message = error && error.message ? error.message : "Неизвестная ошибка";
-    if (/invalid login credentials/i.test(message)) return "Неверный email или пароль.";
-    if (/email not confirmed/i.test(message)) return "Email ещё не подтверждён в Supabase.";
-    return `Не удалось войти: ${message}`;
-  }
-
-  function showAuthScreen(message, info = false) {
-    const screen = document.getElementById("authScreen");
-    const app = document.getElementById("app");
-    const status = document.getElementById("appLoginStatus");
-    if (screen) screen.hidden = false;
-    if (app) app.hidden = true;
-    document.body.classList.add("auth-pending");
-    if (status) {
-      status.textContent = message || "";
-      status.classList.toggle("info", Boolean(info));
-    }
-  }
-
-  function showDashboard() {
-    const screen = document.getElementById("authScreen");
-    const app = document.getElementById("app");
-    const email = document.getElementById("currentUserEmail");
-    const password = document.getElementById("appLoginPassword");
-    if (screen) screen.hidden = true;
-    if (app) app.hidden = false;
-    if (email) email.textContent = cloud.user && cloud.user.email ? cloud.user.email : "";
-    if (password) password.value = "";
-    document.body.classList.remove("auth-pending");
+    if (cloud.user) await loadCloudState();
+    else render();
   }
 
   async function loadCloudState(options = {}) {
@@ -445,17 +367,35 @@
     const statusText = cloud.message || "Статус облака пока неизвестен.";
 
     if (!configured) {
-      container.innerHTML = `<div class="${statusClass}"><strong>Supabase не настроен</strong><span>Добавьте URL и anon key в supabase-config.js.</span></div>`;
+      container.innerHTML = `
+        <div class="${statusClass}">
+          <strong>Локальный режим</strong>
+          <span>Добавьте Supabase URL и anon key в supabase-config.js.</span>
+        </div>
+      `;
       return;
     }
 
     const actions = userEmail
-      ? `<div class="cloud-user">
-          <span>Пользователь: <strong>${escapeHtml(userEmail)}</strong></span>
+      ? `
+        <div class="cloud-user">
+          <span>Вход: <strong>${escapeHtml(userEmail)}</strong></span>
           <button id="cloudPull" class="ghost" type="button">Загрузить из облака</button>
           <button id="cloudPush" class="primary" type="button">Отправить локальные данные</button>
-        </div>`
-      : `<p class="muted">Войдите на стартовом экране, чтобы открыть дашборд.</p>`;
+          <button id="cloudSignOut" class="ghost" type="button">Выйти</button>
+        </div>
+      `
+      : `
+        <form id="cloudLoginForm" class="cloud-login">
+          <label>Email
+            <input id="cloudEmail" type="email" autocomplete="email" required>
+          </label>
+          <label>Пароль
+            <input id="cloudPassword" type="password" autocomplete="current-password" required>
+          </label>
+          <button id="cloudSignIn" class="primary" type="submit">Войти</button>
+        </form>
+      `;
 
     container.innerHTML = `
       <div class="${statusClass}">
@@ -468,6 +408,10 @@
   }
 
   function bindCloudPanelActions() {
+    const form = document.getElementById("cloudLoginForm");
+    if (form) form.addEventListener("submit", handleCloudSignIn);
+    const signOut = document.getElementById("cloudSignOut");
+    if (signOut) signOut.addEventListener("click", handleCloudSignOut);
     const pull = document.getElementById("cloudPull");
     if (pull) pull.addEventListener("click", () => loadCloudState({ force: true }));
     const push = document.getElementById("cloudPush");
@@ -498,14 +442,10 @@
 
   async function handleCloudSignOut() {
     if (!cloud.client) return;
-    const { error } = await cloud.client.auth.signOut();
-    if (error) {
-      setCloudStatus("error", `Не удалось выйти: ${error.message}`);
-      return;
-    }
+    await cloud.client.auth.signOut();
     cloud.user = null;
-    setCloudStatus("auth", "Вы вышли. Для доступа к дашборду требуется вход.");
-    showAuthScreen("Вы вышли из дашборда.");
+    setCloudStatus("auth", "Вы вышли из облака. Данные остаются в локальной копии.");
+    render();
   }
 
   function setCloudStatus(status, message) {
@@ -2488,8 +2428,12 @@
       const className = findValue(row, ["Название", "Занятие", "Группа"]);
       if (!className) return null;
       const capacityRaw = findValue(row, ["Всего слотов", "Слоты", "Вместимость"]);
-      const bookedRaw = findValue(row, ["Записались, чел", "Записались"]);
+      const availableRaw = findValue(row, ["Доступно записей", "Доступно мест", "Свободно мест"]);
+      const bookedRaw = findValue(row, ["Всего записей", "Записались, чел", "Записались"]);
       const attendedRaw = findValue(row, ["Пришли, чел", "Пришли", "Посещения"]);
+      const booked = parseLeadingOrNumber(bookedRaw);
+      const available = parseLeadingOrNumber(availableRaw);
+      const capacity = parseLeadingOrNumber(capacityRaw) || (availableRaw ? available + booked : 0);
       const occupancyRaw = findValue(row, ["Заполняемость", "Заполненность", "Загрузка", "Загруженность", "Заполняемость, %", "Заполненность, %"]);
       const hasOccupancyPct = Boolean(occupancyRaw || clean(attendedRaw).includes("%") || clean(bookedRaw).includes("%"));
       const occupancyPct = hasOccupancyPct
@@ -2503,8 +2447,8 @@
         type: findValue(row, ["Тип"]),
         hall: findValue(row, ["Зал"]),
         direction: findValue(row, ["Подразделение", "Направление"]) || className,
-        capacity: parseLeadingOrNumber(capacityRaw),
-        booked: parseLeadingOrNumber(bookedRaw),
+        capacity,
+        booked,
         attended: parseLeadingOrNumber(attendedRaw),
         occupancyPct,
         hasOccupancyPct,
@@ -2845,8 +2789,29 @@
 
   function resolveDirection(row) {
     const direction = clean(row.direction);
-    if (direction && !isGenericDirection(direction)) return direction;
-    return clean(row.className) || "Без направления";
+    const className = clean(row.className || row.direction);
+
+    if (direction && !isGenericDirection(direction)) {
+      const mapped = directionFromSchedules(direction);
+      return mapped || direction;
+    }
+
+    const mapped = directionFromSchedules(className);
+    return mapped || className || "Без направления";
+  }
+
+  function directionFromSchedules(className) {
+    const target = clean(className).toLowerCase();
+    if (!target || !state || !Array.isArray(state.schedules)) return "";
+
+    const match = state.schedules.find((schedule) => {
+      const scheduleClass = clean(schedule.className).toLowerCase();
+      return scheduleClass === target;
+    });
+
+    if (!match) return "";
+    const mappedDirection = clean(match.direction);
+    return mappedDirection && !isGenericDirection(mappedDirection) ? mappedDirection : "";
   }
 
   function findValue(row, aliases) {
