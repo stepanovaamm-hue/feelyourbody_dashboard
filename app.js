@@ -2,6 +2,9 @@
   "use strict";
 
   const STORAGE_KEY = "fitbase-studio-dashboard-state-v1";
+  const CLOUD_CONFIG = window.FITBASE_SUPABASE || {};
+  const CLOUD_TABLE = CLOUD_CONFIG.table || "dashboard_state";
+  const CLOUD_STATE_ID = CLOUD_CONFIG.stateId || "studio-main";
   const DATASETS = [
     "sales",
     "renewals",
@@ -27,6 +30,71 @@
   ];
   const PRODUCT_TYPES = ["абонемент", "разовое", "пробное", "персональное"];
   const SEGMENTS = ["взрослые", "дети / подростки", "персональные"];
+  const REPORT_REQUIREMENTS = [
+    {
+      key: "sales",
+      label: "Продажи абонементов",
+      source: "FitBase",
+      missing: "загрузить продажи"
+    },
+    {
+      key: "renewals",
+      label: "Продления",
+      source: "FitBase",
+      missing: "загрузить продления"
+    },
+    {
+      key: "schedules",
+      label: "Расписание / загрузка",
+      source: "FitBase",
+      missing: "загрузить расписание"
+    },
+    {
+      key: "visits",
+      label: "Посещения",
+      source: "FitBase",
+      missing: "загрузить посещения"
+    },
+    {
+      key: "trials",
+      label: "Пробные занятия",
+      source: "FitBase",
+      missing: "загрузить пробные"
+    },
+    {
+      key: "personals",
+      label: "Персональные занятия",
+      source: "FitBase",
+      missing: "загрузить персональные"
+    },
+    {
+      key: "clients",
+      label: "Уникальные клиенты",
+      source: "FitBase",
+      missing: "загрузить клиентов"
+    },
+    {
+      key: "expenses",
+      label: "Расходы",
+      source: "вручную",
+      manual: true,
+      missing: "внести расходы"
+    },
+    {
+      key: "plans",
+      label: "План продаж",
+      source: "вручную",
+      manual: true,
+      missing: "внести план"
+    },
+    {
+      key: "marketing",
+      label: "Маркетинг месяца",
+      source: "вручную",
+      manual: true,
+      missing: "внести активности"
+    }
+  ];
 
   let state = loadState();
   let filters = {
@@ -39,63 +107,26 @@
     segment: "all",
     source: "all"
   };
+  let cloud = {
+    client: null,
+    ready: false,
+    user: null,
+    status: "local",
+    message: "Данные пока сохраняются только в этом браузере.",
+    updatedAt: ""
+  };
+  let cloudSaveTimer = 0;
 
   document.addEventListener("DOMContentLoaded", init);
 
   function init() {
-    bindWelcomeScreen();
+    bindAppAuthActions();
     bindTabs();
     bindFilters();
     bindDataActions();
     renderManualForms();
     render();
-  }
-
-
-  function bindWelcomeScreen() {
-    const phrases = [
-      "Студия растёт из маленьких шагов: одного занятия, одного решения, одного человека, который вернулся снова.",
-      "Цифры — это история людей, которые выбирают заботиться о себе вместе с нами.",
-      "Всё, что мы измеряем сегодня, помогает создавать более тёплое и устойчивое пространство завтра.",
-      "Хорошая студия похожа на сад: где-то нужно полить, где-то поддержать, а где-то просто дать время для роста.",
-      "Этот дашборд — не про контроль. Он про внимание к тому, что помогает студии жить и развиваться.",
-      "Как у любого живого организма, у студии есть свой ритм. Этот отчёт помогает его услышать.",
-      "Хорошая студия начинается с заботы. А устойчивый рост появляется там, где забота встречается с вниманием к цифрам.",
-      "Когда есть ясность в цифрах, появляется больше пространства для творчества, развития и заботы о клиентах.",
-      "Здесь собрана история месяца: люди, занятия, энергия команды и результаты, которые мы создаём вместе."
-    ];
-    const welcome = document.getElementById("welcome");
-    const button = document.getElementById("welcomeEnter");
-    const motivation = document.getElementById("motivation");
-    const vine = document.getElementById("vine");
-    if (!welcome || !button || !motivation || !vine) return;
-
-    let index = Math.floor(Math.random() * phrases.length);
-    const duration = 7000;
-
-    function runVineAnimation() {
-      vine.classList.remove("play");
-      void vine.offsetWidth;
-      vine.classList.add("play");
-    }
-
-    motivation.textContent = phrases[index];
-    runVineAnimation();
-
-    setInterval(() => {
-      index = (index + 1) % phrases.length;
-      motivation.style.transition = "opacity .5s";
-      motivation.style.opacity = "0";
-      window.setTimeout(() => {
-        motivation.textContent = phrases[index];
-        motivation.style.opacity = "1";
-        runVineAnimation();
-      }, 500);
-    }, duration);
-
-    button.addEventListener("click", () => {
-      welcome.classList.add("hide");
-    });
+    initCloudStorage();
   }
 
   function emptyState() {
@@ -164,6 +195,13 @@
       record.capacity = toNumber(record.capacity || 0);
       record.booked = toNumber(record.booked || 0);
       record.attended = toNumber(record.attended || record.visits || 0);
+      const rawOccupancy = firstFilled(record.occupancyPct, record.occupancy, record.fillRate, record.load);
+      record.hasOccupancyPct = Boolean(record.hasOccupancyPct) || rawOccupancy !== "";
+      record.occupancyPct = record.hasOccupancyPct ? normalizeOccupancy(rawOccupancy) : 0;
+      if (!record.capacity && record.attended && record.occupancyPct) {
+        record.capacity = record.attended / (record.occupancyPct / 100);
+      }
+      record.resolvedDirection = resolveDirection(record);
       record.segment = record.segment || "взрослые";
     }
     if (type === "visits") {
@@ -196,8 +234,321 @@
     return record;
   }
 
-  function saveState() {
+  function saveState(options = {}) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    if (!options.localOnly) queueCloudSave();
+  }
+
+  async function initCloudStorage() {
+    showAuthScreen("Проверяем подключение…", true);
+    if (!CLOUD_CONFIG.url || !CLOUD_CONFIG.anonKey) {
+      setCloudStatus("error", "Supabase не настроен.");
+      showAuthScreen("В supabase-config.js не указаны URL и anon key.");
+      return;
+    }
+    if (!window.supabase || !window.supabase.createClient) {
+      setCloudStatus("error", "Supabase SDK не загрузился.");
+      showAuthScreen("Не удалось загрузить Supabase. Проверьте интернет и обновите страницу.");
+      return;
+    }
+
+    cloud.client = window.supabase.createClient(CLOUD_CONFIG.url, CLOUD_CONFIG.anonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true
+      }
+    });
+    cloud.ready = true;
+
+    cloud.client.auth.onAuthStateChange((event, session) => {
+      cloud.user = session && session.user ? session.user : null;
+      if (cloud.user) {
+        showDashboard();
+        if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") loadCloudState();
+      } else {
+        setCloudStatus("auth", "Для доступа к дашборду требуется вход.");
+        showAuthScreen(event === "SIGNED_OUT" ? "Вы вышли из дашборда." : "");
+      }
+    });
+
+    const { data, error } = await cloud.client.auth.getSession();
+    if (error) {
+      setCloudStatus("error", `Не удалось проверить вход: ${error.message}`);
+      showAuthScreen(`Не удалось проверить вход: ${error.message}`);
+      return;
+    }
+    cloud.user = data && data.session ? data.session.user : null;
+    if (cloud.user) {
+      showDashboard();
+      await loadCloudState();
+    } else {
+      setCloudStatus("auth", "Для доступа к дашборду требуется вход.");
+      showAuthScreen("");
+    }
+  }
+
+  function bindAppAuthActions() {
+    const form = document.getElementById("appLoginForm");
+    if (form) form.addEventListener("submit", handleAppSignIn);
+    const signOut = document.getElementById("appSignOut");
+    if (signOut) signOut.addEventListener("click", handleCloudSignOut);
+  }
+
+  async function handleAppSignIn(event) {
+    event.preventDefault();
+    const emailInput = document.getElementById("appLoginEmail");
+    const passwordInput = document.getElementById("appLoginPassword");
+    const button = document.getElementById("appLoginButton");
+    const email = clean(emailInput && emailInput.value);
+    const password = passwordInput ? passwordInput.value : "";
+    if (!email || !password) {
+      showAuthScreen("Введите email и пароль.");
+      return;
+    }
+    if (!cloud.client) {
+      showAuthScreen("Подключение к Supabase ещё не готово.");
+      return;
+    }
+    if (button) button.disabled = true;
+    showAuthScreen("Выполняем вход…", true);
+    const { data, error } = await cloud.client.auth.signInWithPassword({ email, password });
+    if (button) button.disabled = false;
+    if (error) {
+      showAuthScreen(authErrorMessage(error));
+      return;
+    }
+    cloud.user = data && data.user ? data.user : null;
+    showDashboard();
+    await loadCloudState();
+  }
+
+  function authErrorMessage(error) {
+    const message = error && error.message ? error.message : "Неизвестная ошибка";
+    if (/invalid login credentials/i.test(message)) return "Неверный email или пароль.";
+    if (/email not confirmed/i.test(message)) return "Email ещё не подтверждён в Supabase.";
+    return `Не удалось войти: ${message}`;
+  }
+
+  function showAuthScreen(message, info = false) {
+    const screen = document.getElementById("authScreen");
+    const app = document.getElementById("app");
+    const status = document.getElementById("appLoginStatus");
+    if (screen) screen.hidden = false;
+    if (app) app.hidden = true;
+    document.body.classList.add("auth-pending");
+    if (status) {
+      status.textContent = message || "";
+      status.classList.toggle("info", Boolean(info));
+    }
+  }
+
+  function showDashboard() {
+    const screen = document.getElementById("authScreen");
+    const app = document.getElementById("app");
+    const email = document.getElementById("currentUserEmail");
+    const password = document.getElementById("appLoginPassword");
+    if (screen) screen.hidden = true;
+    if (app) app.hidden = false;
+    if (email) email.textContent = cloud.user && cloud.user.email ? cloud.user.email : "";
+    if (password) password.value = "";
+    document.body.classList.remove("auth-pending");
+  }
+
+  async function loadCloudState(options = {}) {
+    if (!cloud.client || !cloud.user) return;
+    setCloudStatus("sync", "Загружаю общие данные из Supabase...");
+    const { data, error } = await cloud.client
+      .from(CLOUD_TABLE)
+      .select("data, updated_at")
+      .eq("id", CLOUD_STATE_ID)
+      .limit(1);
+
+    if (error) {
+      setCloudStatus("error", cloudErrorMessage(error));
+      render();
+      return;
+    }
+
+    const row = data && data[0] ? data[0] : null;
+    const remoteState = row ? normalizeState(row.data || emptyState()) : emptyState();
+    cloud.updatedAt = row && row.updated_at ? row.updated_at : "";
+
+    if (!row || isStateEmpty(remoteState)) {
+      setCloudStatus(
+        "ready",
+        "База подключена, но в облаке пока пусто. Можно отправить текущие локальные данные кнопкой ниже."
+      );
+      render();
+      return;
+    }
+
+    state = remoteState;
+    saveState({ localOnly: true });
+    setCloudStatus("ready", `Данные загружены из облака${cloud.updatedAt ? `, обновлено ${formatDateTime(cloud.updatedAt)}` : ""}.`);
+    render();
+
+    if (options.force) {
+      const status = document.getElementById("importStatus");
+      if (status) status.textContent = "Общие данные загружены из Supabase.";
+    }
+  }
+
+  function queueCloudSave() {
+    if (!cloud.client || !cloud.user) return;
+    clearTimeout(cloudSaveTimer);
+    cloudSaveTimer = setTimeout(() => {
+      saveCloudState({ silent: true });
+    }, 900);
+  }
+
+  async function saveCloudState(options = {}) {
+    if (!cloud.client) {
+      setCloudStatus("error", "Supabase еще не подключен.");
+      render();
+      return;
+    }
+    if (!cloud.user) {
+      setCloudStatus("auth", "Войдите в Supabase, чтобы сохранить данные в общем хранилище.");
+      render();
+      return;
+    }
+
+    if (!options.silent) setCloudStatus("sync", "Сохраняю данные в Supabase...");
+    const now = new Date().toISOString();
+    const payload = {
+      id: CLOUD_STATE_ID,
+      data: clone(state),
+      updated_at: now,
+      updated_by: cloud.user.id
+    };
+    const { error } = await cloud.client
+      .from(CLOUD_TABLE)
+      .upsert(payload, { onConflict: "id" });
+
+    if (error) {
+      setCloudStatus("error", cloudErrorMessage(error));
+      render();
+      return;
+    }
+    cloud.updatedAt = now;
+    setCloudStatus("ready", `Сохранено в облаке ${formatDateTime(now)}.`);
+    render();
+  }
+
+  function renderCloudPanel() {
+    const container = document.getElementById("cloudPanel");
+    if (!container) return;
+
+    const configured = Boolean(CLOUD_CONFIG.url && CLOUD_CONFIG.anonKey);
+    const userEmail = cloud.user && cloud.user.email ? cloud.user.email : "";
+    const statusClass = `cloud-status ${escapeAttr(cloud.status)}`;
+    const statusText = cloud.message || "Статус облака пока неизвестен.";
+
+    if (!configured) {
+      container.innerHTML = `<div class="${statusClass}"><strong>Supabase не настроен</strong><span>Добавьте URL и anon key в supabase-config.js.</span></div>`;
+      return;
+    }
+
+    const actions = userEmail
+      ? `<div class="cloud-user">
+          <span>Пользователь: <strong>${escapeHtml(userEmail)}</strong></span>
+          <button id="cloudPull" class="ghost" type="button">Загрузить из облака</button>
+          <button id="cloudPush" class="primary" type="button">Отправить локальные данные</button>
+        </div>`
+      : `<p class="muted">Войдите на стартовом экране, чтобы открыть дашборд.</p>`;
+
+    container.innerHTML = `
+      <div class="${statusClass}">
+        <strong>${cloudStatusTitle()}</strong>
+        <span>${escapeHtml(statusText)}</span>
+      </div>
+      ${actions}
+    `;
+    bindCloudPanelActions();
+  }
+
+  function bindCloudPanelActions() {
+    const pull = document.getElementById("cloudPull");
+    if (pull) pull.addEventListener("click", () => loadCloudState({ force: true }));
+    const push = document.getElementById("cloudPush");
+    if (push) push.addEventListener("click", () => saveCloudState({ silent: false }));
+  }
+
+  async function handleCloudSignIn(event) {
+    event.preventDefault();
+    if (!cloud.client) {
+      await initCloudStorage();
+      if (!cloud.client) return;
+    }
+    const email = clean(document.getElementById("cloudEmail").value);
+    const password = document.getElementById("cloudPassword").value;
+    if (!email || !password) return;
+
+    setCloudStatus("sync", "Выполняю вход...");
+    render();
+    const { data, error } = await cloud.client.auth.signInWithPassword({ email, password });
+    if (error) {
+      setCloudStatus("error", `Не удалось войти: ${error.message}`);
+      render();
+      return;
+    }
+    cloud.user = data && data.user ? data.user : null;
+    await loadCloudState();
+  }
+
+  async function handleCloudSignOut() {
+    if (!cloud.client) return;
+    const { error } = await cloud.client.auth.signOut();
+    if (error) {
+      setCloudStatus("error", `Не удалось выйти: ${error.message}`);
+      return;
+    }
+    cloud.user = null;
+    setCloudStatus("auth", "Вы вышли. Для доступа к дашборду требуется вход.");
+    showAuthScreen("Вы вышли из дашборда.");
+  }
+
+  function setCloudStatus(status, message) {
+    cloud.status = status;
+    cloud.message = message;
+    renderCloudPanel();
+  }
+
+  function cloudStatusTitle() {
+    if (cloud.status === "ready") return "Облако подключено";
+    if (cloud.status === "sync") return "Синхронизация";
+    if (cloud.status === "error") return "Нужна настройка";
+    if (cloud.status === "auth") return "Вход в общее хранилище";
+    return "Локальный режим";
+  }
+
+  function cloudErrorMessage(error) {
+    const message = error && error.message ? error.message : "неизвестная ошибка";
+    const code = error && error.code ? error.code : "";
+    if (code === "42P01" || /relation .* does not exist|Could not find the table/i.test(message)) {
+      return "В Supabase еще нет таблицы dashboard_state. Выполните SQL из файла supabase-setup.sql.";
+    }
+    if (/row-level security|permission denied|violates row-level security/i.test(message)) {
+      return "Нет доступа к общей базе. Проверьте, что ваш email добавлен в dashboard_allowed_users.";
+    }
+    return `Ошибка Supabase: ${message}`;
+  }
+
+  function isStateEmpty(value) {
+    if (!value) return true;
+    return DATASETS.every((key) => !Array.isArray(value[key]) || value[key].length === 0);
+  }
+
+  function formatDateTime(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit"
+    }).format(date);
   }
 
   function bindTabs() {
@@ -272,17 +623,20 @@
     const directionStats = buildDirectionStats(data);
     const salesStats = buildSalesStats(data);
     const recommendations = buildRecommendations(data, metrics, directionStats, salesStats);
+    const managementAnswers = buildManagementAnswers(data, metrics, directionStats);
+    const efficiencyAnalytics = buildEfficiencyAnalytics(data, metrics);
 
     renderHeaderNote();
     renderDashboard(data, metrics, directionStats, recommendations);
     renderSales(data, metrics, salesStats);
     renderAttendance(data, metrics, directionStats);
+    renderEfficiency(efficiencyAnalytics);
     renderFunnel(data, metrics);
     renderClients(data, metrics);
     renderExpenses(data, metrics);
-    renderRecommendations(recommendations);
+    renderRecommendations(recommendations, managementAnswers);
     renderMonthReport(data, metrics, directionStats, salesStats, recommendations);
-    renderDataStats();
+    renderDataStats(data);
   }
 
   function renderHeaderNote() {
@@ -302,7 +656,7 @@
     }
 
     setOptions("filterMonth", [["all", "Все месяцы"]].concat(months.map((m) => [m, monthLabel(m)])), filters.month);
-    setOptions("filterDirection", [["all", "Все направления"]].concat(valuesFromState(["direction", "className"]).map((v) => [v, v])), filters.direction);
+    setOptions("filterDirection", [["all", "Все направления"]].concat(directionValuesFromState().map((v) => [v, v])), filters.direction);
     setOptions("filterProductType", [["all", "Все типы"]].concat(PRODUCT_TYPES.map((v) => [v, v])), filters.productType);
     setOptions("filterManager", [["all", "Все менеджеры"]].concat(valuesFromState(["manager"]).map((v) => [v, v])), filters.manager);
     setOptions("filterSegment", [["all", "Все сегменты"]].concat(SEGMENTS.map((v) => [v, v])), filters.segment);
@@ -343,6 +697,17 @@
     return Array.from(values).sort((a, b) => a.localeCompare(b, "ru"));
   }
 
+  function directionValuesFromState() {
+    const values = new Set();
+    DATASETS.forEach((key) => {
+      state[key].forEach((row) => {
+        const value = resolveDirection(row);
+        if (value && value !== "Без направления") values.add(value);
+      });
+    });
+    return Array.from(values).sort((a, b) => a.localeCompare(b, "ru"));
+  }
+
   function getFilteredData() {
     const result = {};
     DATASETS.forEach((key) => {
@@ -358,7 +723,7 @@
     if (filters.month !== "all" && !month && type !== "clients") return false;
     if (filters.from && (!date || date < filters.from)) return false;
     if (filters.to && (!date || date > filters.to)) return false;
-    if (!matchesValue(filters.direction, row.direction || row.className)) return false;
+    if (!matchesDirectionFilter(filters.direction, row)) return false;
     if (!matchesValue(filters.manager, row.manager)) return false;
     if (!matchesValue(filters.segment, row.segment)) return false;
     if (!matchesValue(filters.source, row.source || row.sourceFile)) return false;
@@ -374,6 +739,11 @@
     return clean(actualValue).toLowerCase() === clean(filterValue).toLowerCase();
   }
 
+  function matchesDirectionFilter(filterValue, row) {
+    if (!filterValue || filterValue === "all") return true;
+    return [resolveDirection(row), row.direction, row.className].some((value) => matchesValue(filterValue, value));
+  }
+
   function recordDate(row, type) {
     if (type === "renewals") return dateOnly(row.purchaseDate || row.endDate);
     if (type === "visits") return dateOnly(row.date || row.entryAt);
@@ -385,6 +755,12 @@
   function recordMonth(row, type) {
     if ((type === "plans" || type === "marketing") && row.month) return row.month;
     return monthKey(recordDate(row, type));
+  }
+
+  function timeSlotLabel(value) {
+    const parsed = parseDate(value);
+    if (parsed && parsed.includes("T")) return parsed.slice(11, 16);
+    return "Без времени";
   }
 
   function computeMetrics(data) {
@@ -405,7 +781,7 @@
     const scheduleCapacity = sum(data.schedules, "capacity");
     const visitRows = data.visits.length ? sum(data.visits, "visits") : 0;
     const attendanceTotal = scheduleAttended || visitRows;
-    const avgOccupancy = scheduleCapacity ? (scheduleAttended / scheduleCapacity) * 100 : 0;
+    const avgOccupancy = weightedOccupancy(data.schedules);
     const uniqueClients = countUniqueClients(data);
     const renewed = data.renewals.filter(isRenewed).length;
     const notRenewed = data.renewals.filter(isNotRenewed).length;
@@ -452,40 +828,80 @@
     return names.size;
   }
 
+  function weightedOccupancy(rows) {
+    const total = rows.reduce((accumulator, row) => {
+      const measure = scheduleOccupancyMeasure(row);
+      accumulator.value += measure.percent * measure.weight;
+      accumulator.weight += measure.weight;
+      return accumulator;
+    }, { value: 0, weight: 0 });
+    return total.weight ? total.value / total.weight : 0;
+  }
+
+  function scheduleOccupancyMeasure(row) {
+    const capacity = toNumber(row.capacity);
+    const attended = toNumber(row.attended);
+    if (capacity > 0) {
+      return {
+        percent: (attended / capacity) * 100,
+        weight: capacity,
+        hasOccupancy: true
+      };
+    }
+    if (row.hasOccupancyPct) {
+      return {
+        percent: toNumber(row.occupancyPct),
+        weight: 1,
+        hasOccupancy: true
+      };
+    }
+    return { percent: 0, weight: 0, hasOccupancy: false };
+  }
+
   function buildDirectionStats(data) {
     const groups = new Map();
     data.schedules.forEach((row) => {
-      const key = clean(row.direction || row.className || "Без направления");
+      const key = resolveDirection(row);
       const item = groups.get(key) || {
         direction: key,
         classes: 0,
         capacity: 0,
         booked: 0,
         attended: 0,
-        visits: 0
+        visits: 0,
+        occupancyValue: 0,
+        occupancyWeight: 0,
+        hasOccupancy: false
       };
+      const measure = scheduleOccupancyMeasure(row);
       item.classes += 1;
       item.capacity += toNumber(row.capacity);
       item.booked += toNumber(row.booked);
       item.attended += toNumber(row.attended);
+      item.occupancyValue += measure.percent * measure.weight;
+      item.occupancyWeight += measure.weight;
+      item.hasOccupancy = item.hasOccupancy || measure.hasOccupancy;
       groups.set(key, item);
     });
     data.visits.forEach((row) => {
-      const key = clean(row.direction || "Без направления");
+      const key = resolveDirection(row);
       const item = groups.get(key) || {
         direction: key,
         classes: 0,
         capacity: 0,
         booked: 0,
         attended: 0,
-        visits: 0
+        visits: 0,
+        occupancyValue: 0,
+        occupancyWeight: 0,
+        hasOccupancy: false
       };
       item.visits += toNumber(row.visits || 1);
       groups.set(key, item);
     });
     return Array.from(groups.values())
       .map((item) => {
-        item.occupancy = item.capacity ? (item.attended / item.capacity) * 100 : 0;
+        item.occupancy = item.occupancyWeight ? item.occupancyValue / item.occupancyWeight : 0;
         item.zone = occupancyZone(item.occupancy);
         return item;
       })
@@ -498,21 +914,28 @@
       const key = clean(row.className || row.direction || "Без занятия");
       const item = groups.get(key) || {
         className: key,
-        direction: clean(row.direction || ""),
+        direction: resolveDirection(row),
         classes: 0,
         capacity: 0,
         booked: 0,
-        attended: 0
+        attended: 0,
+        occupancyValue: 0,
+        occupancyWeight: 0,
+        hasOccupancy: false
       };
+      const measure = scheduleOccupancyMeasure(row);
       item.classes += 1;
       item.capacity += toNumber(row.capacity);
       item.booked += toNumber(row.booked);
       item.attended += toNumber(row.attended);
+      item.occupancyValue += measure.percent * measure.weight;
+      item.occupancyWeight += measure.weight;
+      item.hasOccupancy = item.hasOccupancy || measure.hasOccupancy;
       groups.set(key, item);
     });
     return Array.from(groups.values())
       .map((item) => {
-        item.occupancy = item.capacity ? (item.attended / item.capacity) * 100 : 0;
+        item.occupancy = item.occupancyWeight ? item.occupancyValue / item.occupancyWeight : 0;
         item.zone = occupancyZone(item.occupancy);
         return item;
       })
@@ -539,6 +962,521 @@
     item.quantity += toNumber(row.quantity);
     item.amount += toNumber(row.amount);
     map.set(key, item);
+  }
+
+  function buildEfficiencyAnalytics(data, metrics) {
+    return {
+      directions: buildEfficiencyRows(data, metrics, "direction"),
+      trainers: buildEfficiencyRows(data, metrics, "trainer")
+    };
+  }
+
+  function buildEfficiencyRows(data, metrics, entityType) {
+    const groups = new Map();
+
+    data.schedules.forEach((row) => {
+      const name = efficiencyEntityName(row, entityType);
+      if (!name) return;
+      const item = ensureEfficiencyItem(groups, name);
+      const measure = scheduleOccupancyMeasure(row);
+      addScheduleLoad(item, row);
+      item.occupancySamples.push(measure.hasOccupancy ? measure.percent : 0);
+      addMapValue(item.scheduleMonths, recordMonth(row, "schedules") || "Без месяца", toNumber(row.attended));
+    });
+
+    data.visits.forEach((row) => {
+      const name = efficiencyEntityName(row, entityType);
+      if (!name) return;
+      const item = ensureEfficiencyItem(groups, name);
+      const visits = toNumber(row.visits || 1) || 1;
+      item.visits += visits;
+      addMapValue(item.visitMonths, recordMonth(row, "visits") || "Без месяца", visits);
+      addClientTouch(item, row.client, visits);
+      item.visitSessions.add(visitSessionKey(row, entityType));
+    });
+
+    const revenueRows = metrics.salesRevenue > 0 ? data.sales.concat(data.personals) : data.renewals.concat(data.personals);
+    const activityByEntity = new Map();
+    groups.forEach((item, name) => {
+      const activity = item.attended || item.visits;
+      if (activity > 0) activityByEntity.set(name, activity);
+    });
+    const revenueByEntity = splitMoneyByEntity(revenueRows, metrics.revenue, activityByEntity, entityType);
+    const trialConversion = buildTrialConversionByEntity(data, entityType);
+    const purchaseRenewal = buildPurchaseRenewalByEntity(data, entityType);
+
+    const allNames = new Set([...groups.keys(), ...revenueByEntity.keys(), ...trialConversion.keys(), ...purchaseRenewal.keys()]);
+    return Array.from(allNames).map((name) => {
+      const item = groups.get(name) || ensureEfficiencyItem(groups, name);
+      finalizeLoadItem(item);
+      const inferredClasses = item.classes || item.visitSessions.size;
+      const attendanceTotal = item.attended || item.visits;
+      const trial = trialConversion.get(name) || { base: 0, converted: 0 };
+      const purchase = purchaseRenewal.get(name) || { base: 0, converted: 0 };
+      const revenue = revenueByEntity.get(name) || 0;
+      const uniqueClients = item.clients.size;
+      const regularClients = Array.from(item.clients.values()).filter((count) => count >= 2).length;
+      const hasOccupancy = item.hasOccupancy;
+      const stability = item.occupancySamples.length ? stabilityIndex(item.occupancySamples) : 0;
+      const row = {
+        name,
+        classes: inferredClasses,
+        hasOccupancy,
+        avgOccupancy: hasOccupancy ? item.occupancy : 0,
+        avgParticipants: inferredClasses ? attendanceTotal / inferredClasses : 0,
+        trialBase: trial.base,
+        trialConverted: trial.converted,
+        trialConversion: trial.base ? (trial.converted / trial.base) * 100 : 0,
+        purchaseBase: purchase.base,
+        purchaseConverted: purchase.converted,
+        purchaseRenewalConversion: purchase.base ? (purchase.converted / purchase.base) * 100 : 0,
+        avgMonthlyAttendance: averageMapValue(item.scheduleMonths.size ? item.scheduleMonths : item.visitMonths),
+        uniqueClients,
+        regularClients,
+        regularShare: uniqueClients ? (regularClients / uniqueClients) * 100 : 0,
+        revenue,
+        revenuePerClass: inferredClasses ? revenue / inferredClasses : 0,
+        stabilityBase: item.occupancySamples.length,
+        stabilityIndex: stability,
+        _class: hasOccupancy ? efficiencyStatusClass(item.occupancy, stability) : ""
+      };
+      row.sortRisk = (hasOccupancy ? 100 - row.avgOccupancy : 25) + (row.stabilityBase ? 100 - row.stabilityIndex : 25) + (100 - row.purchaseRenewalConversion) * 0.25;
+      return row;
+    }).sort((a, b) => b.sortRisk - a.sortRisk || b.revenuePerClass - a.revenuePerClass);
+  }
+
+  function ensureEfficiencyItem(groups, name) {
+    const item = groups.get(name) || createLoadItem({
+      name,
+      visits: 0,
+      visitSessions: new Set(),
+      clients: new Map(),
+      scheduleMonths: new Map(),
+      visitMonths: new Map(),
+      occupancySamples: []
+    });
+    groups.set(name, item);
+    return item;
+  }
+
+  function efficiencyEntityName(row, entityType) {
+    if (entityType === "trainer") {
+      const trainer = clean(row.trainer);
+      return isRealTrainer(trainer) ? trainer : "";
+    }
+    return businessDirection(row) || resolveDirection(row);
+  }
+
+  function efficiencyEntityFromClient(row, data, entityType) {
+    const direct = efficiencyEntityName(row, entityType);
+    if (direct && direct !== "Без направления") return direct;
+    const visit = findClientVisit(row.client, row.date || row.purchaseDate || row.endDate, data);
+    return visit ? efficiencyEntityName(visit, entityType) : (entityType === "direction" ? "Без направления" : "");
+  }
+
+  function buildTrialConversionByEntity(data, entityType) {
+    const groups = new Map();
+    const addTrial = (row, count, converted) => {
+      const name = efficiencyEntityFromClient(row, data, entityType);
+      if (!name) return;
+      const item = groups.get(name) || { base: 0, converted: 0 };
+      item.base += count;
+      item.converted += converted;
+      groups.set(name, item);
+    };
+
+    data.trials.forEach((row) => {
+      const count = toNumber(row.quantity || 1) || 1;
+      addTrial(row, count, row.converted || yes(row.status) || row.purchaseDate || toNumber(row.amount) > 0 ? count : 0);
+    });
+    data.sales.filter(isTrialSale).forEach((row) => {
+      const count = toNumber(row.quantity || 1) || 1;
+      addTrial(row, count, hasPaidAfterTrial(row.client, row.date, data) ? count : 0);
+    });
+    data.renewals.filter((row) => includes(row.membership, "проб")).forEach((row) => {
+      addTrial(row, 1, isRenewed(row) ? 1 : 0);
+    });
+    return groups;
+  }
+
+  function buildPurchaseRenewalByEntity(data, entityType) {
+    const groups = new Map();
+    data.sales.filter((row) => !isTrialSale(row) && toNumber(row.amount) > 0 && row.client).forEach((row) => {
+      const name = efficiencyEntityFromClient(row, data, entityType);
+      if (!name) return;
+      const count = toNumber(row.quantity || 1) || 1;
+      const item = groups.get(name) || { base: 0, converted: 0 };
+      item.base += count;
+      item.converted += hasRenewalAfterPurchase(row.client, row.date, data) ? count : 0;
+      groups.set(name, item);
+    });
+    return groups;
+  }
+
+  function splitMoneyByEntity(rows, totalAmount, activityByEntity, entityType) {
+    const result = new Map();
+    let unassigned = 0;
+    rows.forEach((row) => {
+      const amount = toNumber(row.amount || row.budget || 0);
+      if (!amount) return;
+      const name = efficiencyEntityName(row, entityType);
+      if (name && name !== "Без направления") result.set(name, (result.get(name) || 0) + amount);
+      else unassigned += amount;
+    });
+    if (!rows.length && totalAmount) unassigned = totalAmount;
+    const activityTotal = Array.from(activityByEntity.values()).reduce((total, value) => total + value, 0);
+    if (unassigned && activityTotal) {
+      activityByEntity.forEach((activity, name) => {
+        result.set(name, (result.get(name) || 0) + unassigned * (activity / activityTotal));
+      });
+    }
+    return result;
+  }
+
+  function addClientTouch(item, client, count) {
+    const key = clientKey(client);
+    if (!key) return;
+    item.clients.set(key, (item.clients.get(key) || 0) + count);
+  }
+
+  function addMapValue(map, key, value) {
+    if (!key || !value) return;
+    map.set(key, (map.get(key) || 0) + value);
+  }
+
+  function averageMapValue(map) {
+    const values = Array.from(map.values());
+    return values.length ? values.reduce((total, value) => total + value, 0) / values.length : 0;
+  }
+
+  function stabilityIndex(values) {
+    const samples = values.filter((value) => Number.isFinite(value));
+    if (!samples.length) return 0;
+    if (samples.length === 1) return 100;
+    const average = samples.reduce((total, value) => total + value, 0) / samples.length;
+    if (!average) return 0;
+    const variance = samples.reduce((total, value) => total + Math.pow(value - average, 2), 0) / samples.length;
+    const cv = Math.sqrt(variance) / average;
+    return Math.max(0, Math.min(100, 100 - cv * 100));
+  }
+
+  function efficiencyStatusClass(occupancy, stability) {
+    if (occupancy < 30 || stability < 35) return "status-red";
+    if (occupancy < 50 || stability < 60) return "status-yellow";
+    return "status-green";
+  }
+
+  function visitSessionKey(row, entityType) {
+    const date = dateOnly(row.date || row.entryAt);
+    const time = timeSlotLabel(row.entryAt || row.date);
+    const trainer = clean(row.trainer || "");
+    const direction = resolveDirection(row);
+    return entityType === "trainer" ? `${date}-${time}-${trainer}-${direction}` : `${date}-${time}-${direction}`;
+  }
+
+  function findClientVisit(client, date, data) {
+    const key = clientKey(client);
+    if (!key) return null;
+    const baseDate = dateOnly(date);
+    const visits = data.visits.filter((row) => clientKey(row.client) === key);
+    if (!visits.length) return null;
+    return visits
+      .map((row) => ({ row, distance: Math.abs(daysBetween(baseDate, dateOnly(row.date || row.entryAt))) }))
+      .filter((item) => !baseDate || item.distance <= 45)
+      .sort((a, b) => a.distance - b.distance)[0]?.row || visits[0];
+  }
+
+  function hasRenewalAfterPurchase(client, date, data) {
+    const key = clientKey(client);
+    const purchaseDate = dateOnly(date);
+    if (!key || !purchaseDate) return false;
+    return data.renewals.some((row) => clientKey(row.client) === key && isRenewed(row) && isAfter(row.purchaseDate || row.endDate, purchaseDate))
+      || data.sales.some((row) => clientKey(row.client) === key && !isTrialSale(row) && toNumber(row.amount) > 0 && isAfter(row.date, purchaseDate));
+  }
+
+  function isRealTrainer(value) {
+    const text = clean(value).toLowerCase();
+    return Boolean(text) && text !== "нет" && text !== "без тренера";
+  }
+
+  function buildManagementAnswers(data, metrics, directionStats) {
+    return {
+      timeUnderload: buildTimeUnderload(data),
+      trainerUnderload: buildTrainerUnderload(data),
+      directionUnderload: buildDirectionUnderload(directionStats),
+      trialConversion: buildTrialConversionStats(data),
+      directionProfitability: buildDirectionProfitability(data, metrics, directionStats),
+      trainerRetention: buildTrainerRetention(data),
+      groupActions: buildGroupActions(data)
+    };
+  }
+
+  function buildTimeUnderload(data) {
+    const groups = new Map();
+    data.schedules.forEach((row) => {
+      const key = timeSlotLabel(row.date);
+      const item = groups.get(key) || createLoadItem({ time: key });
+      addScheduleLoad(item, row);
+      groups.set(key, item);
+    });
+    return Array.from(groups.values())
+      .map(finalizeLoadItem)
+      .filter((row) => row.hasOccupancy && row.occupancy < 50)
+      .sort((a, b) => a.occupancy - b.occupancy || b.classes - a.classes)
+      .map((row) => Object.assign(row, {
+        action: row.occupancy < 30 ? "убрать, объединить или перенести слот" : "проверить время и прогрев группы",
+        _class: row.zone.className
+      }));
+  }
+
+  function buildTrainerUnderload(data) {
+    const groups = new Map();
+    data.schedules.forEach((row) => {
+      const trainer = clean(row.trainer || "Без тренера");
+      const item = groups.get(trainer) || createLoadItem({ trainer });
+      addScheduleLoad(item, row);
+      groups.set(trainer, item);
+    });
+    return Array.from(groups.values())
+      .map(finalizeLoadItem)
+      .filter((row) => row.trainer !== "Без тренера" && row.hasOccupancy && row.occupancy < 50)
+      .sort((a, b) => a.occupancy - b.occupancy || b.classes - a.classes)
+      .map((row) => Object.assign(row, {
+        action: row.occupancy < 30 ? "разобрать расписание, формат и коммуникацию" : "помочь добором и проверить удобство слотов",
+        _class: row.zone.className
+      }));
+  }
+
+  function buildDirectionUnderload(directionStats) {
+    return directionStats
+      .filter((row) => row.hasOccupancy && row.occupancy < 50)
+      .map((row) => Object.assign({}, row, {
+        action: row.occupancy < 30 ? "пересобрать оффер или объединить группы" : "усилить набор и проверить расписание",
+        _class: row.zone.className
+      }))
+      .sort((a, b) => a.occupancy - b.occupancy || b.classes - a.classes);
+  }
+
+  function buildTrialConversionStats(data) {
+    const groups = new Map();
+    const addTrial = (row, count, converted) => {
+      const direction = trialDirection(row, data);
+      const item = groups.get(direction) || { direction, trials: 0, converted: 0 };
+      item.trials += count;
+      item.converted += converted;
+      groups.set(direction, item);
+    };
+
+    data.trials.forEach((row) => {
+      const count = toNumber(row.quantity || 1) || 1;
+      const converted = row.converted || yes(row.status) || row.purchaseDate || toNumber(row.amount) > 0 ? count : 0;
+      addTrial(row, count, converted);
+    });
+
+    data.sales.filter(isTrialSale).forEach((row) => {
+      const count = toNumber(row.quantity || 1) || 1;
+      const converted = hasPaidAfterTrial(row.client, row.date, data) ? count : 0;
+      addTrial(row, count, converted);
+    });
+
+    data.renewals.filter((row) => includes(row.membership, "проб")).forEach((row) => {
+      addTrial(row, 1, isRenewed(row) ? 1 : 0);
+    });
+
+    return Array.from(groups.values())
+      .map((row) => {
+        row.conversion = row.trials ? (row.converted / row.trials) * 100 : 0;
+        row.action = row.conversion < 40 ? "проверить скрипт, оффер и сообщение после пробного" : "масштабировать источник пробных";
+        row._class = row.conversion < 40 ? "status-red" : row.conversion < 60 ? "status-yellow" : "status-green";
+        return row;
+      })
+      .sort((a, b) => a.conversion - b.conversion || b.trials - a.trials);
+  }
+
+  function buildDirectionProfitability(data, metrics, directionStats) {
+    const activityByDirection = new Map();
+    directionStats.forEach((row) => {
+      const activity = toNumber(row.attended || row.visits || 0);
+      if (activity > 0) activityByDirection.set(row.direction, activity);
+    });
+
+    const revenueRows = metrics.salesRevenue > 0 ? data.sales.concat(data.personals) : data.renewals.concat(data.personals);
+    const revenue = splitMoneyByDirection(revenueRows, metrics.revenue, activityByDirection);
+    const expenses = splitMoneyByDirection(data.expenses, metrics.expensesTotal, activityByDirection);
+    const directions = new Set([...activityByDirection.keys(), ...revenue.keys(), ...expenses.keys()]);
+
+    return Array.from(directions).map((direction) => {
+      const rowRevenue = revenue.get(direction) || 0;
+      const rowExpenses = expenses.get(direction) || 0;
+      const profit = rowRevenue - rowExpenses;
+      const margin = rowRevenue ? (profit / rowRevenue) * 100 : 0;
+      return {
+        direction,
+        revenue: rowRevenue,
+        expenses: rowExpenses,
+        profit,
+        margin,
+        action: metrics.expensesTotal ? (profit < 0 ? "искать причину убытка или менять расписание" : "держать и масштабировать") : "внести расходы для чистой прибыльности",
+        _class: profit < 0 ? "status-red" : margin < 20 ? "status-yellow" : "status-green"
+      };
+    }).sort((a, b) => a.profit - b.profit);
+  }
+
+  function buildTrainerRetention(data) {
+    const groups = new Map();
+    data.visits.forEach((row) => {
+      const trainer = clean(row.trainer || "");
+      const client = clientKey(row.client);
+      if (!trainer || !client) return;
+      const item = groups.get(trainer) || { trainer, clients: new Map() };
+      const clientRow = item.clients.get(client) || { visits: 0, firstDate: dateOnly(row.date || row.entryAt), name: clean(row.client) };
+      clientRow.visits += toNumber(row.visits || 1) || 1;
+      const visitDate = dateOnly(row.date || row.entryAt);
+      if (visitDate && (!clientRow.firstDate || visitDate < clientRow.firstDate)) clientRow.firstDate = visitDate;
+      item.clients.set(client, clientRow);
+      groups.set(trainer, item);
+    });
+
+    return Array.from(groups.values()).map((item) => {
+      const clients = Array.from(item.clients.values());
+      const retained = clients.filter((client) => client.visits >= 2 || hasPaidAfterTrial(client.name, client.firstDate, data)).length;
+      const retention = clients.length ? (retained / clients.length) * 100 : 0;
+      return {
+        trainer: item.trainer,
+        clients: clients.length,
+        retained,
+        retention,
+        action: retention >= 60 ? "разобрать практики и тиражировать" : "проверить контакт после занятия и повторную запись",
+        _class: retention < 40 ? "status-red" : retention < 60 ? "status-yellow" : "status-green"
+      };
+    }).sort((a, b) => b.retention - a.retention || b.clients - a.clients);
+  }
+
+  function buildGroupActions(data) {
+    const groups = new Map();
+    data.schedules.forEach((row) => {
+      const className = clean(row.className || row.direction || "Без занятия");
+      const item = groups.get(className) || createLoadItem({
+        className,
+        direction: resolveDirection(row),
+        trainers: new Map(),
+        times: new Map()
+      });
+      addScheduleLoad(item, row);
+      addCount(item.trainers, clean(row.trainer || "Без тренера"));
+      addCount(item.times, timeSlotLabel(row.date));
+      groups.set(className, item);
+    });
+
+    return Array.from(groups.values())
+      .map((item) => {
+        const row = finalizeLoadItem(item);
+        row.trainer = mostCommon(row.trainers);
+        row.time = mostCommon(row.times);
+        row.avgAttendance = row.classes ? row.attended / row.classes : 0;
+        row.action = groupAction(row);
+        row._class = row.zone.className;
+        return row;
+      })
+      .filter((row) => row.hasOccupancy && (row.occupancy < 50 || row.avgAttendance < 4))
+      .sort((a, b) => a.occupancy - b.occupancy || a.avgAttendance - b.avgAttendance);
+  }
+
+  function createLoadItem(extra) {
+    return Object.assign({
+      classes: 0,
+      capacity: 0,
+      booked: 0,
+      attended: 0,
+      occupancyValue: 0,
+      occupancyWeight: 0,
+      hasOccupancy: false
+    }, extra);
+  }
+
+  function addScheduleLoad(item, row) {
+    const measure = scheduleOccupancyMeasure(row);
+    item.classes += 1;
+    item.capacity += toNumber(row.capacity);
+    item.booked += toNumber(row.booked);
+    item.attended += toNumber(row.attended);
+    item.occupancyValue += measure.percent * measure.weight;
+    item.occupancyWeight += measure.weight;
+    item.hasOccupancy = item.hasOccupancy || measure.hasOccupancy;
+  }
+
+  function finalizeLoadItem(item) {
+    item.occupancy = item.occupancyWeight ? item.occupancyValue / item.occupancyWeight : 0;
+    item.zone = occupancyZone(item.occupancy);
+    return item;
+  }
+
+  function splitMoneyByDirection(rows, totalAmount, activityByDirection) {
+    const result = new Map();
+    let unassigned = 0;
+    rows.forEach((row) => {
+      const amount = toNumber(row.amount || row.budget || 0);
+      if (!amount) return;
+      const direction = businessDirection(row);
+      if (direction) result.set(direction, (result.get(direction) || 0) + amount);
+      else unassigned += amount;
+    });
+    if (!rows.length && totalAmount) unassigned = totalAmount;
+    const activityTotal = Array.from(activityByDirection.values()).reduce((total, value) => total + value, 0);
+    if (unassigned && activityTotal) {
+      activityByDirection.forEach((activity, direction) => {
+        result.set(direction, (result.get(direction) || 0) + unassigned * (activity / activityTotal));
+      });
+    }
+    return result;
+  }
+
+  function trialDirection(row, data) {
+    const direct = businessDirection(row);
+    if (direct) return direct;
+    const client = clientKey(row.client);
+    if (!client) return "Без направления";
+    const trialDate = dateOnly(row.date || row.purchaseDate || row.endDate);
+    const visit = data.visits.find((visitRow) => clientKey(visitRow.client) === client && (!trialDate || Math.abs(daysBetween(trialDate, dateOnly(visitRow.date || visitRow.entryAt))) <= 14));
+    return visit ? businessDirection(visit) || resolveDirection(visit) : "Без направления";
+  }
+
+  function hasPaidAfterTrial(client, date, data) {
+    const key = clientKey(client);
+    if (!key) return false;
+    const trialDate = dateOnly(date);
+    return data.sales.some((row) => clientKey(row.client) === key && !isTrialSale(row) && toNumber(row.amount) > 0 && isSameOrAfter(row.date, trialDate))
+      || data.renewals.some((row) => clientKey(row.client) === key && isRenewed(row) && isSameOrAfter(row.purchaseDate || row.endDate, trialDate));
+  }
+
+  function businessDirection(row) {
+    const direction = clean(row.direction);
+    if (direction && !isGenericDirection(direction)) return direction;
+    return clean(row.className);
+  }
+
+  function isGenericDirection(value) {
+    const text = clean(value).toLowerCase();
+    return !text || text.includes("по количеству") || text.includes("без направления") || text.includes("категор") || text.includes("абонемент");
+  }
+
+  function isTrialSale(row) {
+    return row.productType === "пробное" || includes(row.name, "проб");
+  }
+
+  function groupAction(row) {
+    if (row.occupancy < 30) return "объединить с близкой группой или временно снять слот";
+    if (row.avgAttendance < 4) return "перенести время или объединить малую группу";
+    return "усилить набор и проверить коммуникацию";
+  }
+
+  function addCount(map, value) {
+    const key = clean(value || "Без значения");
+    map.set(key, (map.get(key) || 0) + 1);
+  }
+
+  function mostCommon(map) {
+    return Array.from(map.entries()).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
   }
 
   function renderDashboard(data, metrics, directionStats, recommendations) {
@@ -741,6 +1679,40 @@
     ].join("");
   }
 
+  function renderEfficiency(analytics) {
+    const columns = (nameLabel) => [
+      [nameLabel, "name"],
+      ["Ср. заполняемость", (row) => metricPercentCell(row.avgOccupancy, row.hasOccupancy)],
+      ["Занятий", (row) => number(row.classes)],
+      ["Ср. участников", (row) => number(row.avgParticipants)],
+      ["Пробное -> покупка", (row) => ratioCell(row.trialConversion, row.trialBase, row.trialConverted)],
+      ["Покупка -> продление", (row) => ratioCell(row.purchaseRenewalConversion, row.purchaseBase, row.purchaseConverted)],
+      ["Посещ./мес.", (row) => number(row.avgMonthlyAttendance)],
+      ["Уник. клиентов", (row) => number(row.uniqueClients)],
+      ["Постоянные", (row) => percent(row.regularShare)],
+      ["Выручка/занятие", (row) => money(row.revenuePerClass)],
+      ["Стабильность", (row) => metricPercentCell(row.stabilityIndex, row.stabilityBase)]
+    ];
+
+    document.getElementById("efficiencyContent").innerHTML = [
+      `<p>Метрики считаются по текущим фильтрам. Если продажа не содержит направления или тренера, выручка распределяется по доле фактической посещаемости; конверсии связываются через клиента и ближайшее посещение.</p>`,
+      `<div class="card">
+        <div class="card-h">
+          <h3>Направления</h3>
+          <span class="sub">загрузка, конверсии, клиенты, выручка</span>
+        </div>
+        ${wideTable(columns("Направление"), analytics.directions, "Нет данных по направлениям")}
+      </div>`,
+      `<div class="card">
+        <div class="card-h">
+          <h3>Тренеры</h3>
+          <span class="sub">загрузка, удержание, стабильность групп</span>
+        </div>
+        ${wideTable(columns("Тренер"), analytics.trainers, "Нет данных по тренерам")}
+      </div>`
+    ].join("");
+  }
+
   function renderFunnel(data, metrics) {
     const trialRenewals = data.renewals.filter((row) => includes(row.membership, "проб"));
     const converted = trialRenewals.filter(isRenewed);
@@ -904,7 +1876,7 @@
     ].join("");
   }
 
-  function renderRecommendations(recommendations) {
+  function renderRecommendations(recommendations, managementAnswers) {
     const rows = recommendations.length ? recommendations : [{
       priority: "Наблюдение",
       signal: "Данных пока недостаточно",
@@ -932,6 +1904,109 @@
             `;
           }).join("")}
         </div>
+      </div>
+      ${renderManagementAnswers(managementAnswers)}
+    `;
+  }
+
+  function renderManagementAnswers(answers) {
+    return `
+      <div class="card">
+        <div class="card-h">
+          <h3>Ответы на управленческие вопросы</h3>
+          <span class="sub">по выбранному периоду</span>
+        </div>
+        <p class="muted">Прибыльность направлений расчетная: если расходы или продажи не привязаны к направлению, сумма распределяется по доле посещений.</p>
+        <h3>Где недозагрузка по времени?</h3>
+        ${table(
+          [
+            ["Время", "time"],
+            ["Занятий", (row) => number(row.classes)],
+            ["Пришли", (row) => number(row.attended)],
+            ["Слотов", (row) => number(row.capacity)],
+            ["Заполняемость", (row) => percent(row.occupancy)],
+            ["Действие", "action"]
+          ],
+          answers.timeUnderload.slice(0, 8),
+          "Нет временных слотов ниже 50% или нет данных расписания со слотами"
+        )}
+        <h3>Где недозагрузка по тренерам?</h3>
+        ${table(
+          [
+            ["Тренер", "trainer"],
+            ["Занятий", (row) => number(row.classes)],
+            ["Пришли", (row) => number(row.attended)],
+            ["Слотов", (row) => number(row.capacity)],
+            ["Заполняемость", (row) => percent(row.occupancy)],
+            ["Действие", "action"]
+          ],
+          answers.trainerUnderload.slice(0, 8),
+          "Нет тренеров ниже 50% или в расписании нет тренеров/слотов"
+        )}
+        <h3>Какие направления не набирают группы?</h3>
+        ${table(
+          [
+            ["Направление", "direction"],
+            ["Занятий", (row) => number(row.classes)],
+            ["Пришли", (row) => number(row.attended || row.visits)],
+            ["Слотов", (row) => number(row.capacity)],
+            ["Заполняемость", (row) => percent(row.occupancy)],
+            ["Действие", "action"]
+          ],
+          answers.directionUnderload.slice(0, 8),
+          "Нет направлений ниже 50% или нет данных по расписанию"
+        )}
+        <h3>Где низкая конверсия после пробного?</h3>
+        ${table(
+          [
+            ["Направление", "direction"],
+            ["Пробных", (row) => number(row.trials)],
+            ["Купили", (row) => number(row.converted)],
+            ["Конверсия", (row) => percent(row.conversion)],
+            ["Действие", "action"]
+          ],
+          answers.trialConversion.filter((row) => row.conversion < 60).slice(0, 8),
+          "Нет данных по пробным или нет направлений с низкой конверсией"
+        )}
+        <h3>Какие направления прибыльны, а какие нет?</h3>
+        ${table(
+          [
+            ["Направление", "direction"],
+            ["Выручка", (row) => money(row.revenue)],
+            ["Расходы", (row) => money(row.expenses)],
+            ["Прибыль", (row) => money(row.profit)],
+            ["Маржа", (row) => percent(row.margin)],
+            ["Действие", "action"]
+          ],
+          answers.directionProfitability.slice(0, 10),
+          "Нужны продажи и посещаемость/расписание, чтобы оценить прибыльность направлений"
+        )}
+        <h3>Какие тренеры удерживают клиентов лучше?</h3>
+        ${table(
+          [
+            ["Тренер", "trainer"],
+            ["Клиентов", (row) => number(row.clients)],
+            ["Удержаны", (row) => number(row.retained)],
+            ["Удержание", (row) => percent(row.retention)],
+            ["Действие", "action"]
+          ],
+          answers.trainerRetention.slice(0, 8),
+          "Нужны посещения с тренером и клиентом, чтобы оценить удержание"
+        )}
+        <h3>Какие группы стоит объединить или перенести?</h3>
+        ${table(
+          [
+            ["Группа", "className"],
+            ["Направление", "direction"],
+            ["Время", "time"],
+            ["Тренер", "trainer"],
+            ["Заполняемость", (row) => percent(row.occupancy)],
+            ["Средний приход", (row) => number(row.avgAttendance)],
+            ["Действие", "action"]
+          ],
+          answers.groupActions.slice(0, 10),
+          "Нет групп с низкой загрузкой или не хватает расписания со слотами"
+        )}
       </div>
     `;
   }
@@ -968,8 +2043,101 @@
     document.getElementById("monthReportText").textContent = text;
   }
 
-  function renderDataStats() {
+  function renderDataStats(data) {
     document.getElementById("dataStats").textContent = DATASETS.map((key) => `${labelForDataset(key)}: ${state[key].length}`).join("; ");
+    renderReportChecklist(data || state);
+    renderCloudPanel();
+  }
+
+  function renderReportChecklist(data) {
+    const container = document.getElementById("reportChecklist");
+    if (!container) return;
+
+    const rows = REPORT_REQUIREMENTS.map((item) => Object.assign({}, item, reportStatus(item, data)));
+    const ready = rows.filter((row) => row.status === "ready" || row.status === "partial").length;
+    const missing = rows.filter((row) => row.status === "missing" || row.status === "manual-missing");
+    const missingText = missing.length
+      ? `Не хватает: ${missing.map((row) => row.label).join(", ")}.`
+      : "Все ключевые источники для периода закрыты.";
+
+    container.innerHTML = `
+      <div class="readiness-head">
+        <div>
+          <h4>Готовность данных</h4>
+          <p>Период: ${escapeHtml(selectedPeriodLabel())}. ${escapeHtml(missingText)}</p>
+        </div>
+        <strong>${ready}/${rows.length}</strong>
+      </div>
+      <div class="report-grid">
+        ${rows.map((row) => `
+          <div class="report-check ${escapeAttr(row.status)}">
+            <span class="report-mark">${escapeHtml(row.mark)}</span>
+            <div>
+              <b>${escapeHtml(row.label)}</b>
+              <small>${escapeHtml(row.detail)} · ${escapeHtml(row.source)}</small>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  function reportStatus(item, data) {
+    const rows = data[item.key] || [];
+    if (rows.length) {
+      return {
+        status: "ready",
+        mark: "✓",
+        detail: `${rows.length} строк`
+      };
+    }
+
+    const partial = partialReportStatus(item.key, data);
+    if (partial) return partial;
+
+    return {
+      status: item.manual ? "manual-missing" : "missing",
+      mark: item.manual ? "•" : "!",
+      detail: item.missing
+    };
+  }
+
+  function partialReportStatus(key, data) {
+    if (key === "trials") {
+      const salesTrials = sum((data.sales || []).filter((row) => row.productType === "пробное" || includes(row.name, "проб")), "quantity");
+      const renewalTrials = (data.renewals || []).filter((row) => includes(row.membership, "проб") || includes(row.renewalName, "проб")).length;
+      if (salesTrials || renewalTrials) {
+        return {
+          status: "partial",
+          mark: "~",
+          detail: `найдено в других отчетах: ${number(salesTrials + renewalTrials)}`
+        };
+      }
+    }
+
+    if (key === "personals") {
+      const salesPersonals = sum((data.sales || []).filter((row) => row.productType === "персональное" || includes(row.name, "персон")), "quantity");
+      if (salesPersonals) {
+        return {
+          status: "partial",
+          mark: "~",
+          detail: `найдено в продажах: ${number(salesPersonals)}`
+        };
+      }
+    }
+
+    if (key === "clients") {
+      const uniqueClients = countUniqueClients(data);
+      if (uniqueClients) {
+        return {
+          status: "partial",
+          mark: "~",
+          detail: `клиенты есть в отчетах: ${number(uniqueClients)}`
+        };
+      }
+    }
+
+    return null;
   }
 
   function renderManualForms() {
@@ -1126,6 +2294,7 @@
       return;
     }
     const log = [];
+    const importedMonths = new Set();
     for (const file of files) {
       try {
         const rows = await readRowsFromFile(file);
@@ -1134,16 +2303,40 @@
         const records = rows
           .map((row, index) => normalizeUploadedRow(detected, row, file.name, index))
           .filter(Boolean);
+        const beforeReplace = state[detected].length;
+        state[detected] = state[detected].filter((record) => record.sourceFile !== file.name);
+        const replaced = beforeReplace - state[detected].length;
         state[detected].push(...records);
-        log.push(`${file.name}: ${records.length} строк -> ${labelForDataset(detected)}`);
+        records.forEach((record) => {
+          const month = recordMonth(record, detected);
+          if (month) importedMonths.add(month);
+        });
+        log.push(importSummary(file.name, detected, rows.length, records, replaced));
       } catch (error) {
         log.push(`${file.name}: ошибка - ${error.message}`);
       }
+    }
+    if (importedMonths.size === 1) {
+      filters.month = Array.from(importedMonths)[0];
     }
     saveState();
     input.value = "";
     status.textContent = log.join("; ");
     render();
+  }
+
+  function importSummary(fileName, detected, sourceRows, records, replaced) {
+    const parts = [`${fileName}: ${records.length} строк -> ${labelForDataset(detected)}`];
+    if (replaced) parts.push(`заменено старых строк: ${replaced}`);
+    if (!records.length && sourceRows) {
+      parts.push("проверьте тип отчета или заголовки колонок");
+    }
+    if (detected === "sales" && records.length) {
+      const amount = sum(records, "amount");
+      parts.push(`сумма ${money(amount)}`);
+      if (!amount) parts.push("сумма не найдена в колонках");
+    }
+    return parts.join(", ");
   }
 
   async function readRowsFromFile(file) {
@@ -1228,7 +2421,7 @@
     if (keys.includes("дата проведения") || keys.includes("всего слотов") || lowerName.includes("распис")) return "schedules";
     if (keys.includes("время входа") || keys.includes("номер карты") || lowerName.includes("посещ")) return "visits";
     if (keys.includes("сумма продления") || keys.includes("дата окончания") || lowerName.includes("contract")) return "renewals";
-    if (keys.includes("кол во") && keys.includes("сумма") && keys.includes("наименование")) return "sales";
+    if (lowerName.includes("продаж") || (keys.includes("наименование") && (keys.includes("сумма") || keys.includes("оплачено") || keys.includes("итоговая стоимость")))) return "sales";
     if (keys.includes("расход") || keys.includes("категория")) return "expenses";
     if (keys.includes("проб")) return "trials";
     return "sales";
@@ -1239,19 +2432,37 @@
     if (type === "sales") {
       const name = findValue(row, ["Наименование", "Название", "Абонемент", "Услуга"]);
       const productType = classifyProduct(`${name} ${findValue(row, ["Тип"])}`);
+      const amount = firstMoney(row, [
+        "Сумма",
+        "Стоимость",
+        "Выручка",
+        "Оплачено за вычетом комиссии",
+        "Оплачено, ₽",
+        "Оплачено",
+        "Итоговая стоимость, ₽",
+        "Итоговая стоимость",
+        "Полн. стоимость, ₽",
+        "Полн. стоимость"
+      ]);
       if (!name) return null;
       return normalizeLoadedRecord("sales", {
         id,
-        date: parseDate(findValue(row, ["Дата", "Дата продажи", "Дата покупки"])) || defaultImportDate(),
+        date: parseDate(findValue(row, ["Дата", "Дата продажи", "Дата покупки", "Дата оплаты", "Дата начисления"])) || defaultImportDate(),
+        clientId: findValue(row, ["ID клиента", "ID"]),
+        client: findValue(row, ["Клиент", "ФИО", "Имя клиента"]),
         type: findValue(row, ["Тип"]) || productType,
         name,
         quantity: parseLeadingOrNumber(findValue(row, ["Кол-во", "Количество", "Qty"])) || 1,
-        amount: parseMoney(findValue(row, ["Сумма", "Стоимость", "Выручка"])),
+        amount,
+        fullPrice: firstMoney(row, ["Полн. стоимость, ₽", "Полн. стоимость", "Полная стоимость"]),
+        finalPrice: firstMoney(row, ["Итоговая стоимость, ₽", "Итоговая стоимость"]),
         productType,
-        manager: findValue(row, ["Менеджер", "Администратор"]),
-        direction: findValue(row, ["Направление", "Подразделение"]),
+        manager: firstValue(row, ["Отв. менеджер", "Менеджер", "Администратор", "Инициатор"]),
+        direction: findValue(row, ["Направление", "Подразделение", "Категория"]),
         segment: findValue(row, ["Сегмент", "Взрослые / дети"]),
-        source: "FitBase",
+        paymentMethod: findValue(row, ["Способ оплаты"]),
+        status: findValue(row, ["Статус продления абонемента", "Статус"]),
+        source: firstValue(row, ["Источник оплаты", "Источник создания"]) || "FitBase",
         sourceFile: fileName
       });
     }
@@ -1276,6 +2487,14 @@
     if (type === "schedules") {
       const className = findValue(row, ["Название", "Занятие", "Группа"]);
       if (!className) return null;
+      const capacityRaw = findValue(row, ["Всего слотов", "Слоты", "Вместимость"]);
+      const bookedRaw = findValue(row, ["Записались, чел", "Записались"]);
+      const attendedRaw = findValue(row, ["Пришли, чел", "Пришли", "Посещения"]);
+      const occupancyRaw = findValue(row, ["Заполняемость", "Заполненность", "Загрузка", "Загруженность", "Заполняемость, %", "Заполненность, %"]);
+      const hasOccupancyPct = Boolean(occupancyRaw || clean(attendedRaw).includes("%") || clean(bookedRaw).includes("%"));
+      const occupancyPct = hasOccupancyPct
+        ? parsePercent(occupancyRaw, true) || parsePercent(attendedRaw) || parsePercent(bookedRaw)
+        : "";
       return normalizeLoadedRecord("schedules", {
         id,
         date: parseDate(findValue(row, ["Дата проведения", "Дата", "Время"])),
@@ -1284,9 +2503,11 @@
         type: findValue(row, ["Тип"]),
         hall: findValue(row, ["Зал"]),
         direction: findValue(row, ["Подразделение", "Направление"]) || className,
-        capacity: parseLeadingOrNumber(findValue(row, ["Всего слотов", "Слоты", "Вместимость"])),
-        booked: parseLeadingOrNumber(findValue(row, ["Записались, чел", "Записались"])),
-        attended: parseLeadingOrNumber(findValue(row, ["Пришли, чел", "Пришли", "Посещения"])),
+        capacity: parseLeadingOrNumber(capacityRaw),
+        booked: parseLeadingOrNumber(bookedRaw),
+        attended: parseLeadingOrNumber(attendedRaw),
+        occupancyPct,
+        hasOccupancyPct,
         source: "FitBase",
         sourceFile: fileName
       });
@@ -1359,21 +2580,21 @@
   function buildRecommendations(data, metrics, directionStats, salesStats) {
     const rows = [];
     directionStats.forEach((row) => {
-      if (row.capacity && row.occupancy < 30) {
+      if (row.hasOccupancy && row.occupancy < 30) {
         rows.push({
           priority: "Высокий",
           signal: `${row.direction}: заполняемость ${percent(row.occupancy)}`,
           action: "Запустить точечный прогрев/акцию по направлению и проверить расписание.",
           reason: "Ниже 30% - красная зона, группа может съедать ресурс без возврата."
         });
-      } else if (row.capacity && row.occupancy < 50) {
+      } else if (row.hasOccupancy && row.occupancy < 50) {
         rows.push({
           priority: "Средний",
           signal: `${row.direction}: заполняемость ${percent(row.occupancy)}`,
           action: "Проверить удобство времени, оффер и коммуникацию до занятия.",
           reason: "30-50% - зона внимания."
         });
-      } else if (row.capacity && row.occupancy >= 70) {
+      } else if (row.hasOccupancy && row.occupancy >= 70) {
         rows.push({
           priority: "Рост",
           signal: `${row.direction}: заполняемость ${percent(row.occupancy)}`,
@@ -1551,6 +2772,18 @@
     return `<table class="data-table"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
   }
 
+  function wideTable(columns, rows, emptyText = "Нет данных") {
+    return `<div class="table-scroll">${table(columns, rows, emptyText)}</div>`;
+  }
+
+  function ratioCell(value, base, converted) {
+    return base ? `${percent(value)} (${number(converted)} из ${number(base)})` : "нет данных";
+  }
+
+  function metricPercentCell(value, hasData) {
+    return hasData ? percent(value) : "нет данных";
+  }
+
   function avgCheck(sales) {
     const quantity = sum(sales, "quantity");
     return quantity ? sum(sales, "amount") / quantity : 0;
@@ -1563,6 +2796,10 @@
       if (value) values.add(value.toLowerCase());
     });
     return values.size;
+  }
+
+  function clientKey(value) {
+    return clean(value).toLowerCase().replace(/\s+/g, " ");
   }
 
   function isRenewed(row) {
@@ -1606,10 +2843,24 @@
     return "взрослые";
   }
 
+  function resolveDirection(row) {
+    const direction = clean(row.direction);
+    if (direction && !isGenericDirection(direction)) return direction;
+    return clean(row.className) || "Без направления";
+  }
+
   function findValue(row, aliases) {
     const normalizedAliases = aliases.map(normalizeKey);
     for (const [key, value] of Object.entries(row)) {
       if (normalizedAliases.includes(normalizeKey(key))) return clean(value);
+    }
+    return "";
+  }
+
+  function firstValue(row, aliases) {
+    for (const alias of aliases) {
+      const value = findValue(row, [alias]);
+      if (value) return value;
     }
     return "";
   }
@@ -1626,9 +2877,33 @@
     return toNumber(String(value || "").replace(/\s/g, "").replace(/[^0-9,.-]/g, "").replace(",", "."));
   }
 
+  function firstMoney(row, aliases) {
+    for (const alias of aliases) {
+      const value = findValue(row, [alias]);
+      if (clean(value) !== "") return parseMoney(value);
+    }
+    return 0;
+  }
+
   function parseLeadingOrNumber(value) {
     const match = clean(value).match(/^-?\d+(?:[.,]\d+)?/);
     return match ? toNumber(match[0]) : parseMoney(value);
+  }
+
+  function parsePercent(value, allowPlainNumber) {
+    const text = clean(value);
+    if (!text) return 0;
+    const percentMatch = text.match(/(-?\d+(?:[.,]\d+)?)\s*%/);
+    if (percentMatch) return toNumber(percentMatch[1]);
+    if (allowPlainNumber) {
+      const numberValue = parseMoney(text);
+      return numberValue >= 0 && numberValue <= 100 ? numberValue : 0;
+    }
+    return 0;
+  }
+
+  function normalizeOccupancy(value) {
+    return parsePercent(value, true);
   }
 
   function parseDate(value) {
@@ -1660,6 +2935,25 @@
   function dateOnly(value) {
     const parsed = parseDate(value);
     return parsed ? parsed.slice(0, 10) : "";
+  }
+
+  function daysBetween(left, right) {
+    if (!left || !right) return Number.POSITIVE_INFINITY;
+    const leftDate = new Date(`${left}T00:00:00`);
+    const rightDate = new Date(`${right}T00:00:00`);
+    return (leftDate - rightDate) / (1000 * 60 * 60 * 24);
+  }
+
+  function isSameOrAfter(value, floor) {
+    const date = dateOnly(value);
+    if (!date) return false;
+    return !floor || date >= floor;
+  }
+
+  function isAfter(value, floor) {
+    const date = dateOnly(value);
+    if (!date || !floor) return false;
+    return date > floor;
   }
 
   function monthKey(value) {
@@ -1750,6 +3044,13 @@
 
   function includes(value, part) {
     return clean(value).toLowerCase().includes(part.toLowerCase());
+  }
+
+  function firstFilled() {
+    for (const value of arguments) {
+      if (value != null && clean(value) !== "") return value;
+    }
+    return "";
   }
 
   function clean(value) {

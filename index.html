@@ -3,51 +3,53 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>баланс дашборд: система управления студией</title>
+  <title>FitBase: система управления студией</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
-<body>
-
-  <!-- ===================== WELCOME SCREEN ===================== -->
-  <div id="welcome" role="dialog" aria-label="Стартовый экран дашборда">
-    <div class="w-card">
-      <div class="w-top">
-        <div class="w-brand" aria-label="Feel Your Body"><span>feel your body</span><span class="x">×</span><span>баланс дашборд</span></div>
-        <div class="w-year">2026</div>
+<body class="auth-pending">
+  <section id="authScreen" class="auth-screen" aria-labelledby="authTitle">
+    <div class="auth-card">
+      <div class="auth-brand">
+        <div class="logo" aria-hidden="true">FYB</div>
+        <div>
+          <span>Feel Your Body</span>
+          <small>система управления студией</small>
+        </div>
       </div>
-      <h1 id="motivation">Студия растёт из маленьких шагов: одного занятия, одного решения, одного человека, который вернулся снова.</h1>
-      <p class="w-quote" id="subquote"></p>
-      <div class="w-vine" id="vine" aria-hidden="true">
-        <svg viewBox="0 0 360 46" preserveAspectRatio="none">
-          <path class="stem-bg" d="M4,34 C70,16 110,40 168,26 C226,12 270,38 356,22"/>
-          <path class="stem" pathLength="100" d="M4,34 C70,16 110,40 168,26 C226,12 270,38 356,22"/>
-          <g transform="translate(46,26)"><g class="leaf" style="--d:.7s"><path fill="#8fcf6a" d="M0,0 C2,-9 11,-10 14,-3 C10,2 3,4 0,0 Z"/></g></g>
-          <g transform="translate(78,33) scale(1,-1)"><g class="leaf" style="--d:1.3s"><path fill="#6cbf8e" d="M0,0 C2,-8 10,-9 13,-3 C9,2 3,3 0,0 Z"/></g></g>
-          <g transform="translate(120,38)"><g class="leaf" style="--d:1.9s"><path fill="#2e7a5e" d="M0,0 C2,-9 11,-10 15,-2 C10,3 3,4 0,0 Z"/></g></g>
-          <g transform="translate(168,26) scale(1,-1)"><g class="leaf" style="--d:2.7s"><path fill="#8fcf6a" d="M0,0 C2,-9 11,-10 14,-3 C10,2 3,4 0,0 Z"/></g></g>
-          <g transform="translate(210,20)"><g class="leaf" style="--d:3.4s"><path fill="#6cbf8e" d="M0,0 C2,-8 10,-9 13,-3 C9,2 3,3 0,0 Z"/></g></g>
-          <g transform="translate(252,34) scale(1,-1)"><g class="leaf" style="--d:4.2s"><path fill="#2e7a5e" d="M0,0 C2,-9 11,-10 15,-2 C10,3 3,4 0,0 Z"/></g></g>
-          <g transform="translate(300,30)"><g class="leaf" style="--d:5s"><path fill="#8fcf6a" d="M0,0 C2,-9 11,-10 14,-3 C10,2 3,4 0,0 Z"/></g></g>
-          <g transform="translate(340,24) scale(1,-1)"><g class="leaf" style="--d:5.7s"><path fill="#6cbf8e" d="M0,0 C2,-8 10,-9 13,-3 C9,2 3,3 0,0 Z"/></g></g>
-          <circle class="seed" cx="356" cy="22" r="3.4" style="--d:6.3s"/>
-        </svg>
+      <div>
+        <h1 id="authTitle">Вход в дашборд</h1>
+        <p>Используйте email и пароль, созданные в Supabase.</p>
       </div>
-      <button id="welcomeEnter" class="w-enter" type="button">Открыть дашборд →</button>
+      <form id="appLoginForm" class="auth-form">
+        <label>Email
+          <input id="appLoginEmail" type="email" autocomplete="email" required>
+        </label>
+        <label>Пароль
+          <input id="appLoginPassword" type="password" autocomplete="current-password" required>
+        </label>
+        <button id="appLoginButton" class="primary" type="submit">Войти</button>
+      </form>
+      <p id="appLoginStatus" class="auth-status" role="alert" aria-live="polite"></p>
     </div>
-  </div>
-  <div id="app">
+  </section>
+
+  <div id="app" hidden>
     <header class="appbar">
       <div class="brand">
         <div class="logo" aria-hidden="true">FYB</div>
         <div>
-          <h1>баланс дашборд: система управления студией</h1>
+          <h1>FitBase: система управления студией</h1>
           <p id="dataNote">Финансы, продажи, посещаемость, удержание и рекомендации.</p>
         </div>
       </div>
-      <div class="month-badge" id="periodBadge">Май 2026</div>
+      <div class="appbar-actions">
+        <span id="currentUserEmail" class="current-user"></span>
+        <div class="month-badge" id="periodBadge">Май 2026</div>
+        <button id="appSignOut" class="ghost sign-out" type="button">Выйти</button>
+      </div>
     </header>
 
     <section class="filter-panel" aria-labelledby="filters-title">
@@ -91,6 +93,7 @@
       <button type="button" data-tab="dashboard" data-ico="◇" data-short="Главный" class="active">Главный</button>
       <button type="button" data-tab="sales" data-ico="₽" data-short="Продажи">Продажи</button>
       <button type="button" data-tab="attendance" data-ico="▦" data-short="Посещ.">Посещаемость</button>
+      <button type="button" data-tab="efficiency" data-ico="◎" data-short="Эффект.">Эффективность</button>
       <button type="button" data-tab="funnel" data-ico="▽" data-short="Воронка">Воронка</button>
       <button type="button" data-tab="clients" data-ico="◍" data-short="Клиенты">Клиенты</button>
       <button type="button" data-tab="expenses" data-ico="◔" data-short="Расходы">Расходы</button>
@@ -123,6 +126,14 @@
           <p>Направления в красной зоне, зоне внимания, норме и масштабе.</p>
         </div>
         <div id="attendanceContent"></div>
+      </section>
+
+      <section id="tab-efficiency" class="tab-panel">
+        <div class="sheet-head">
+          <h2>Эффективность</h2>
+          <p>Глубокая аналитика направлений и тренеров: загрузка, клиенты, конверсии, выручка и стабильность.</p>
+        </div>
+        <div id="efficiencyContent"></div>
       </section>
 
       <section id="tab-funnel" class="tab-panel">
@@ -174,6 +185,14 @@
           <p>Загрузка выгрузок FitBase и ручной ввод расходов, плана и маркетинга.</p>
         </div>
 
+        <section class="card data-card cloud-card">
+          <div class="card-h">
+            <h3>Общее хранилище</h3>
+            <span class="sub">Supabase</span>
+          </div>
+          <div id="cloudPanel" class="cloud-panel" aria-live="polite"></div>
+        </section>
+
         <section class="card data-card">
           <div class="card-h">
             <h3>Загрузка выгрузок</h3>
@@ -197,6 +216,7 @@
             <button id="importFiles" class="primary" type="button">Загрузить</button>
           </div>
           <p id="importStatus" class="status-line"></p>
+          <div id="reportChecklist" class="report-checklist" aria-live="polite"></div>
         </section>
 
         <section class="card data-card">
@@ -224,7 +244,9 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="initial-data.js"></script>
+  <script src="supabase-config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
