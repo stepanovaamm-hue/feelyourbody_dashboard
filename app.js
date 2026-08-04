@@ -120,6 +120,7 @@
   document.addEventListener("DOMContentLoaded", init);
 
   function init() {
+    bindAppAuthActions();
     bindTabs();
     bindFilters();
     bindDataActions();
@@ -239,12 +240,15 @@
   }
 
   async function initCloudStorage() {
+    showAuthScreen("Проверяем подключение…", true);
     if (!CLOUD_CONFIG.url || !CLOUD_CONFIG.anonKey) {
-      setCloudStatus("local", "Supabase не настроен. Данные сохраняются только в этом браузере.");
+      setCloudStatus("error", "Supabase не настроен.");
+      showAuthScreen("В supabase-config.js не указаны URL и anon key.");
       return;
     }
     if (!window.supabase || !window.supabase.createClient) {
-      setCloudStatus("error", "Supabase SDK не загрузился. Проверьте интернет и обновите страницу.");
+      setCloudStatus("error", "Supabase SDK не загрузился.");
+      showAuthScreen("Не удалось загрузить Supabase. Проверьте интернет и обновите страницу.");
       return;
     }
 
@@ -255,25 +259,99 @@
       }
     });
     cloud.ready = true;
-    setCloudStatus("auth", "Подключение к Supabase готово. Войдите, чтобы синхронизировать данные.");
 
-    cloud.client.auth.onAuthStateChange((_event, session) => {
+    cloud.client.auth.onAuthStateChange((event, session) => {
       cloud.user = session && session.user ? session.user : null;
-      if (cloud.user) loadCloudState();
-      else {
-        setCloudStatus("auth", "Вы вышли из облака. Локальная копия осталась в браузере.");
-        render();
+      if (cloud.user) {
+        showDashboard();
+        if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") loadCloudState();
+      } else {
+        setCloudStatus("auth", "Для доступа к дашборду требуется вход.");
+        showAuthScreen(event === "SIGNED_OUT" ? "Вы вышли из дашборда." : "");
       }
     });
 
     const { data, error } = await cloud.client.auth.getSession();
     if (error) {
       setCloudStatus("error", `Не удалось проверить вход: ${error.message}`);
+      showAuthScreen(`Не удалось проверить вход: ${error.message}`);
       return;
     }
     cloud.user = data && data.session ? data.session.user : null;
-    if (cloud.user) await loadCloudState();
-    else render();
+    if (cloud.user) {
+      showDashboard();
+      await loadCloudState();
+    } else {
+      setCloudStatus("auth", "Для доступа к дашборду требуется вход.");
+      showAuthScreen("");
+    }
+  }
+
+  function bindAppAuthActions() {
+    const form = document.getElementById("appLoginForm");
+    if (form) form.addEventListener("submit", handleAppSignIn);
+    const signOut = document.getElementById("appSignOut");
+    if (signOut) signOut.addEventListener("click", handleCloudSignOut);
+  }
+
+  async function handleAppSignIn(event) {
+    event.preventDefault();
+    const emailInput = document.getElementById("appLoginEmail");
+    const passwordInput = document.getElementById("appLoginPassword");
+    const button = document.getElementById("appLoginButton");
+    const email = clean(emailInput && emailInput.value);
+    const password = passwordInput ? passwordInput.value : "";
+    if (!email || !password) {
+      showAuthScreen("Введите email и пароль.");
+      return;
+    }
+    if (!cloud.client) {
+      showAuthScreen("Подключение к Supabase ещё не готово.");
+      return;
+    }
+    if (button) button.disabled = true;
+    showAuthScreen("Выполняем вход…", true);
+    const { data, error } = await cloud.client.auth.signInWithPassword({ email, password });
+    if (button) button.disabled = false;
+    if (error) {
+      showAuthScreen(authErrorMessage(error));
+      return;
+    }
+    cloud.user = data && data.user ? data.user : null;
+    showDashboard();
+    await loadCloudState();
+  }
+
+  function authErrorMessage(error) {
+    const message = error && error.message ? error.message : "Неизвестная ошибка";
+    if (/invalid login credentials/i.test(message)) return "Неверный email или пароль.";
+    if (/email not confirmed/i.test(message)) return "Email ещё не подтверждён в Supabase.";
+    return `Не удалось войти: ${message}`;
+  }
+
+  function showAuthScreen(message, info = false) {
+    const screen = document.getElementById("authScreen");
+    const app = document.getElementById("app");
+    const status = document.getElementById("appLoginStatus");
+    if (screen) screen.hidden = false;
+    if (app) app.hidden = true;
+    document.body.classList.add("auth-pending");
+    if (status) {
+      status.textContent = message || "";
+      status.classList.toggle("info", Boolean(info));
+    }
+  }
+
+  function showDashboard() {
+    const screen = document.getElementById("authScreen");
+    const app = document.getElementById("app");
+    const email = document.getElementById("currentUserEmail");
+    const password = document.getElementById("appLoginPassword");
+    if (screen) screen.hidden = true;
+    if (app) app.hidden = false;
+    if (email) email.textContent = cloud.user && cloud.user.email ? cloud.user.email : "";
+    if (password) password.value = "";
+    document.body.classList.remove("auth-pending");
   }
 
   async function loadCloudState(options = {}) {
@@ -367,35 +445,17 @@
     const statusText = cloud.message || "Статус облака пока неизвестен.";
 
     if (!configured) {
-      container.innerHTML = `
-        <div class="${statusClass}">
-          <strong>Локальный режим</strong>
-          <span>Добавьте Supabase URL и anon key в supabase-config.js.</span>
-        </div>
-      `;
+      container.innerHTML = `<div class="${statusClass}"><strong>Supabase не настроен</strong><span>Добавьте URL и anon key в supabase-config.js.</span></div>`;
       return;
     }
 
     const actions = userEmail
-      ? `
-        <div class="cloud-user">
-          <span>Вход: <strong>${escapeHtml(userEmail)}</strong></span>
+      ? `<div class="cloud-user">
+          <span>Пользователь: <strong>${escapeHtml(userEmail)}</strong></span>
           <button id="cloudPull" class="ghost" type="button">Загрузить из облака</button>
           <button id="cloudPush" class="primary" type="button">Отправить локальные данные</button>
-          <button id="cloudSignOut" class="ghost" type="button">Выйти</button>
-        </div>
-      `
-      : `
-        <form id="cloudLoginForm" class="cloud-login">
-          <label>Email
-            <input id="cloudEmail" type="email" autocomplete="email" required>
-          </label>
-          <label>Пароль
-            <input id="cloudPassword" type="password" autocomplete="current-password" required>
-          </label>
-          <button id="cloudSignIn" class="primary" type="submit">Войти</button>
-        </form>
-      `;
+        </div>`
+      : `<p class="muted">Войдите на стартовом экране, чтобы открыть дашборд.</p>`;
 
     container.innerHTML = `
       <div class="${statusClass}">
@@ -408,10 +468,6 @@
   }
 
   function bindCloudPanelActions() {
-    const form = document.getElementById("cloudLoginForm");
-    if (form) form.addEventListener("submit", handleCloudSignIn);
-    const signOut = document.getElementById("cloudSignOut");
-    if (signOut) signOut.addEventListener("click", handleCloudSignOut);
     const pull = document.getElementById("cloudPull");
     if (pull) pull.addEventListener("click", () => loadCloudState({ force: true }));
     const push = document.getElementById("cloudPush");
@@ -442,10 +498,14 @@
 
   async function handleCloudSignOut() {
     if (!cloud.client) return;
-    await cloud.client.auth.signOut();
+    const { error } = await cloud.client.auth.signOut();
+    if (error) {
+      setCloudStatus("error", `Не удалось выйти: ${error.message}`);
+      return;
+    }
     cloud.user = null;
-    setCloudStatus("auth", "Вы вышли из облака. Данные остаются в локальной копии.");
-    render();
+    setCloudStatus("auth", "Вы вышли. Для доступа к дашборду требуется вход.");
+    showAuthScreen("Вы вышли из дашборда.");
   }
 
   function setCloudStatus(status, message) {
@@ -2427,8 +2487,8 @@
     if (type === "schedules") {
       const className = findValue(row, ["Название", "Занятие", "Группа"]);
       if (!className) return null;
-      const capacityRaw = findValue(row, ["Всего слотов", "Слоты", "Вместимость", "Доступно записей"]);
-      const bookedRaw = findValue(row, ["Записались, чел", "Записались", "Всего записей"]);
+      const capacityRaw = findValue(row, ["Всего слотов", "Слоты", "Вместимость"]);
+      const bookedRaw = findValue(row, ["Записались, чел", "Записались"]);
       const attendedRaw = findValue(row, ["Пришли, чел", "Пришли", "Посещения"]);
       const occupancyRaw = findValue(row, ["Заполняемость", "Заполненность", "Загрузка", "Загруженность", "Заполняемость, %", "Заполненность, %"]);
       const hasOccupancyPct = Boolean(occupancyRaw || clean(attendedRaw).includes("%") || clean(bookedRaw).includes("%"));
@@ -2785,37 +2845,8 @@
 
   function resolveDirection(row) {
     const direction = clean(row.direction);
-    const className = clean(row.className || row.direction);
-
-    // В строках расписания подразделение уже является направлением.
-    if (direction && !isGenericDirection(direction) && !isClassName(direction)) return direction;
-
-    // В отчете посещений есть только название занятия. Сопоставляем его
-    // с подразделением из загруженного отчета по расписанию.
-    const mappedDirection = directionForClass(className);
-    if (mappedDirection) return mappedDirection;
-
     if (direction && !isGenericDirection(direction)) return direction;
-    return className || "Без направления";
-  }
-
-  function directionForClass(className) {
-    const key = normalizeKey(className);
-    if (!key || !state || !Array.isArray(state.schedules)) return "";
-
-    const scheduleRow = state.schedules.find((row) => {
-      const scheduleClass = normalizeKey(row.className);
-      const scheduleDirection = clean(row.direction);
-      return scheduleClass === key && scheduleDirection && !isGenericDirection(scheduleDirection);
-    });
-
-    return scheduleRow ? clean(scheduleRow.direction) : "";
-  }
-
-  function isClassName(value) {
-    const key = normalizeKey(value);
-    if (!key || !state || !Array.isArray(state.schedules)) return false;
-    return state.schedules.some((row) => normalizeKey(row.className) === key);
+    return clean(row.className) || "Без направления";
   }
 
   function findValue(row, aliases) {
